@@ -50,6 +50,7 @@ FLAWS = {
     "AGG_MODE": "Aggressive Mode supported - may reveal PSK hash for offline attacks",
     "FING_VID": "Fingerprinting possible via VID payload - informational leak",
     "FING_BACKOFF": "Fingerprinting possible via backoff pattern - informational leak",
+    "IKEV2": "IKEv2 is supported - very good and recommended"
 }
 
 # ============================= MAIN MODE TRANSFORMS =============================
@@ -528,7 +529,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     for ip, data in vpns.items():
         results["services"][ip] = {
             "flaws": [],
-            "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+            "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "good": 0},
             "accepted_transforms": {"main": [], "aggressive": []},
             "weak_algorithms": [],
             "proof": {},  # <-- NEW: Proof section
@@ -548,7 +549,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 
         added = set()
 
-        def add_flaw(desc: str, sev: str, payload: str = "") -> None:
+        def add_finding(desc: str, sev: str, payload: str = "") -> None:
             if (ip, desc) in added:
                 return
             results["services"][ip]["flaws"].append({"description": desc, "severity": sev, "data": payload})
@@ -556,11 +557,13 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             added.add((ip, desc))
 
         if data.get("v1") or data.get("v2"):
-            add_flaw(FLAWS["DISC"], "info")
+            add_finding(FLAWS["DISC"], "info")
         if data.get("v1"):
-            add_flaw(FLAWS["IKEV1"], "high")
+            add_finding(FLAWS["IKEV1"], "high")
         if data.get("aggressive"):
-            add_flaw(FLAWS["AGG_MODE"], "critical")
+            add_finding(FLAWS["AGG_MODE"], "critical")
+        if data.get("v2"):
+            add_finding(FLAWS["IKEV2"], "good")
 
         all_keys = data.get("accepted_transform_keys_main", []) + data.get("accepted_transform_keys_aggr", [])
         decoded_weak = set()
@@ -568,33 +571,33 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             decoded_weak.update(_decode_transform_key(key))
 
         if "DES" in decoded_weak:
-            add_flaw(FLAWS["ENC_DES"], "high")
+            add_finding(FLAWS["ENC_DES"], "high")
         if "3DES" in decoded_weak:
-            add_flaw(FLAWS["ENC_3DES"], "medium")
+            add_finding(FLAWS["ENC_3DES"], "medium")
         if "MD5" in decoded_weak:
-            add_flaw(FLAWS["HASH_MD5"], "high")
+            add_finding(FLAWS["HASH_MD5"], "high")
         if "SHA1" in decoded_weak:
-            add_flaw(FLAWS["HASH_SHA1"], "high")
+            add_finding(FLAWS["HASH_SHA1"], "high")
         if "DH Group 1 (MODP-768)" in decoded_weak:
-            add_flaw(FLAWS["DHG_1"], "high")
+            add_finding(FLAWS["DHG_1"], "high")
         if "DH Group 2 (MODP-1024)" in decoded_weak:
-            add_flaw(FLAWS["DHG_2"], "high")
+            add_finding(FLAWS["DHG_2"], "high")
         if "DH Group 5 (MODP-1536)" in decoded_weak:
-            add_flaw(FLAWS["DHG_5"], "high")
+            add_finding(FLAWS["DHG_5"], "high")
         if "PSK" in decoded_weak:
-            add_flaw(FLAWS["AUTH_PSK"], "medium")
+            add_finding(FLAWS["AUTH_PSK"], "medium")
 
         for vid in data.get("vid", []):
-            add_flaw(f"{FLAWS['FING_VID']}: {vid}", "low")
+            add_finding(f"{FLAWS['FING_VID']}: {vid}", "low")
         impl = data.get("showbackoff") or "N/A"
         if impl and impl != "N/A":
-            add_flaw(f"{FLAWS['FING_BACKOFF']}: {impl}", "low")
+            add_finding(f"{FLAWS['FING_BACKOFF']}: {impl}", "low")
 
         results["services"][ip]["accepted_transforms"]["main"] = list(dict.fromkeys(data.get("transforms", [])))
         results["services"][ip]["accepted_transforms"]["aggressive"] = list(dict.fromkeys(data.get("aggressive", [])))
         results["services"][ip]["weak_algorithms"] = sorted(decoded_weak)
 
-    summary = {"total_hosts": len(vpns), "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    summary = {"total_hosts": len(vpns), "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "good":0}
     for svc in results["services"].values():
         for sev, c in svc["severity_counts"].items():
             summary[sev] += c
@@ -609,6 +612,7 @@ def _sev_badge(sev: str) -> str:
     if sev == "medium": return '<span class="badge bg-warning text-dark">MEDIUM</span>'
     if sev == "low": return '<span class="badge bg-info text-dark">LOW</span>'
     if sev == "info": return '<span class="badge bg-secondary text-dark">INFO</span>'
+    if sev == "good": return '<span class="badge bg-success">GOOD</span>'
 
 def _sev_pill(sev: str, count: int) -> str:
     sev = sev.lower()
@@ -617,6 +621,7 @@ def _sev_pill(sev: str, count: int) -> str:
     if sev == "medium": return f'<span class="badge rounded-pill text-bg-warning text-dark">MEDIUM {count}</span>'
     if sev == "low": return f'<span class="badge rounded-pill text-bg-info text-dark">LOW {count}</span>'
     if sev == "info": return f'<span class="badge rounded-pill text-bg-secondary text-dark">INFO {count}</span>'
+    if sev == "good": return f'<span class="badge rounded-pill text-bg-success">GOOD {count}</span>'
 
 def generate_html_report(results: Dict, filename: str):
     total = results["summary"]["total_hosts"]
@@ -625,6 +630,8 @@ def generate_html_report(results: Dict, filename: str):
     med = results["summary"]["medium"]
     low = results["summary"]["low"]
     info = results["summary"]["info"]
+    good = results["summary"]["good"]
+
     confirmed_only = results.get("scan_info", {}).get("confirmed_only", False)
 
     scope_badge = '<span class="badge text-bg-primary">Scope: --onlycustom</span>' if confirmed_only \
@@ -648,7 +655,7 @@ def generate_html_report(results: Dict, filename: str):
         weak_list = "".join(f"<li>{w}</li>" for w in svc["weak_algorithms"]) or "<li><span class='text-muted'>None detected</span></li>"
 
         findings_list = []
-        order = ["critical", "high", "medium", "low", "info"]
+        order = ["critical", "high", "medium", "low", "info", "good"]
         for sev in order:
             for f in svc["flaws"]:
                 if f["severity"] == sev:
@@ -693,6 +700,7 @@ def generate_html_report(results: Dict, filename: str):
               <span class="ms-2">{_sev_pill('medium', svc['severity_counts']['medium'])}</span>
               <span class="ms-2">{_sev_pill('low', svc['severity_counts']['low'])}</span>
               <span class="ms-2">{_sev_pill('info', svc['severity_counts']['info'])}</span>
+              <span class="ms-2">{_sev_pill('good', svc['severity_counts']['good'])}</span>
             </div>
 
             <div class="row g-3">
@@ -836,6 +844,7 @@ def generate_html_report(results: Dict, filename: str):
         <span class="badge text-bg-warning text-dark">MEDIUM {med}</span>
         <span class="badge text-bg-info text-dark">LOW {low}</span>
         <span class="badge text-bg-secondary text-dark">INFO {info}</span>
+        <span class="badge text-bg-success">GOOD {good}</span>
         {scope_badge}
       </div>
     </div>
@@ -940,7 +949,7 @@ def print_console_report(results: Dict[str, Any]) -> None:
     line = "=" * 70
     logger.info("\n" + line + "\n                     SCAN RESULTS SUMMARY                     \n" + line)
     logger.info(f"Total hosts: {s['total_hosts']}")
-    logger.info(f"Critical: [CRITICAL] {s['critical']}  High: [HIGH] {s['high']}  Medium: [MEDIUM] {s['medium']}  Low: [LOW] {s['low']} Info: [INFO] {s['info']}")
+    logger.info(f"Critical: [CRITICAL] {s['critical']}  High: [HIGH] {s['high']}  Medium: [MEDIUM] {s['medium']}  Low: [LOW] {s['low']}  Info: [INFO] {s['info']}  Good: [GOOD] {s['good']}")
     logger.info(line + "\n")
 
     for ip, svc in results["services"].items():
@@ -949,7 +958,7 @@ def print_console_report(results: Dict[str, Any]) -> None:
         logger.info(f"Host: {ip}")
         logger.info(f"  Supported versions: {versions}")
         logger.info(f"  Findings: {sum(counts.values())}  ([CRITICAL] {counts['critical']}, [HIGH] {counts['high']}, [MEDIUM] {counts['medium']}, [LOW] {counts['low']}, [INFO] {counts['info']})")
-        for sev in ["critical", "high", "medium", "low", "info"]:
+        for sev in ["critical", "high", "medium", "low", "info", "good"]:
             items = [f for f in svc["flaws"] if f["severity"] == sev]
             if items:
                 logger.info(f"  [{sev.upper()}]")
