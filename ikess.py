@@ -678,7 +678,7 @@ def generate_html_report(results: Dict, filename: str):
 <body>
   <div class="container-fluid">
     <div class="d-flex flex-wrap align-items-center justify-content-between mb-3">
-      <h1 class="h3 mb-0">IKESS Report <span class="text-muted">| IKE Security Scanner</span></h1>
+      <h1 class="h3 mb-0">IKE Security Scanner Report</h1>
       <div class="d-flex gap-2 flex-wrap">
         <span class="badge text-bg-light">Total hosts: {total}</span>
         <span class="badge text-bg-danger">CRITICAL {crit}</span>
