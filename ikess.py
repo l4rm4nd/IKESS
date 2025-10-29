@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Optional, Dict, List, Tuple, Any
 from itertools import product
 import ipaddress
+from pathlib import Path
 
 # ----------------------------- Logging ---------------------------------
 logging.basicConfig(
@@ -1061,21 +1062,26 @@ def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time:
         "confirmed_only": ONLYCUSTOM,
     }
 
-    xml_file = "ikess_output.xml"
-    json_file = "ikess_output.json"
-    html_file = "ikess_report.html"
+    # ensure subfolder exists
+    out_dir = Path("results")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    generate_xml_report(results, xml_file)
-    with open(json_file, "w", encoding="utf-8") as f:
+    # build paths inside the folder
+    xml_path = out_dir / "ikess_output.xml"
+    json_path = out_dir / "ikess_output.json"
+    html_path = out_dir / "ikess_report.html"
+
+    generate_xml_report(results, str(xml_path))  # cast to str if your funcs expect str
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
-    generate_html_report(results, html_file)
+    generate_html_report(results, str(html_path))
     print_console_report(results)
 
     logger.info("Detailed reports saved to:")
-    logger.info(f"  XML: {xml_file}")
-    logger.info(f"  JSON: {json_file}")
-    logger.info(f"  HTML: {html_file}")
+    logger.info(f"  XML: {xml_path}")
+    logger.info(f"  JSON: {json_path}")
+    logger.info(f"  HTML: {html_path}")
 
 # ------------------------------ Orchestration ---------------------------
 def scan_target(ip: str) -> Dict[str, Any]:
