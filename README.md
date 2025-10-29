@@ -1,4 +1,4 @@
-# IKE-Security-Scanner
+# IKE Security Scanner (IKESS)
 A Python3 Script for Auditing IKE VPN Servers
 
 ## Features
@@ -13,7 +13,7 @@ A Python3 Script for Auditing IKE VPN Servers
 ## Usage
 
 ```bash
-usage: iker-new.py [-h] [-t THREADS] [--fullalgs] [--fingerprint] targets [targets ...]
+usage: ikess.py [-h] [-t THREADS] [--fullalgs] [--fingerprint] targets [targets ...]
 
 ikess v1.1 - IKE Security Scanner
 
