@@ -10,7 +10,8 @@ A Python3 Script for Auditing IKE VPN Servers
 - Detects supported transforms (ENC, HASH, AUTH)
 - Saves results as JSON, XML and HTML report
 - Risk rates findings with summary and recommendations
-- Optional support for fingerprinting via backoff pattern (beta)
+- Support for fingerprinting via vendor ID (VID)
+- Support for fingerprinting via backoff pattern (optional)
 
 ## Usage
 
