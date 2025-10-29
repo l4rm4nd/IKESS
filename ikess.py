@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple, Any
+from itertools import product
 
 # ----------------------------- Logging ---------------------------------
 
@@ -123,6 +124,15 @@ AGGRESSIVE_MODE_TRANSFORMS_FULL = list(dict.fromkeys(AGGRESSIVE_MODE_TRANSFORMS 
     "5,1,1,2",
     "5,1,1,14",
 ]))
+
+# Candidate spaces used only when --fullalgs is on
+ENC_FULL   = ["5", "7/128", "7/192", "7/256"]        # 3DES, AES-128/192/256
+HASH_FULL  = ["1", "2", "5"]                         # MD5, SHA1, SHA256 (extend if your ike-scan supports more)
+AUTH_FULL  = ["1", "3", "64221"]                     # PSK, RSA_Sig, Hybrid_RSA
+GROUP_FULL = ["2", "5", "14", "15", "16"]            # add more if you want
+
+def _build_transform_space(encs, hashes, auths, groups):
+    return [f"{e},{h},{a},{g}" for e, h, a, g in product(encs, hashes, auths, groups)]
 
 # ----------------------------- Helpers ----------------------------------
 
@@ -295,9 +305,17 @@ def _try_transform(ip: str, transform: str, aggressive: bool = False) -> str:
     return _strip_banner(out)
 
 def _transform_sets() -> Tuple[List[str], List[str]]:
-    """Return the (main, aggressive) candidate lists based on FULLALGS."""
+    """Return (main, aggressive) transform lists.
+       Curated by default; exhaustive only with --fullalgs."""
     if FULLALGS:
-        return MAIN_MODE_TRANSFORMS_FULL, AGGRESSIVE_MODE_TRANSFORMS_FULL
+        # Exhaustive sweep when --fullalgs is set
+        main = _build_transform_space(ENC_FULL, HASH_FULL, AUTH_FULL, GROUP_FULL)
+        # You can narrow aggressive if you want fewer packets, or just reuse the same:
+        aggr = _build_transform_space(ENC_FULL, HASH_FULL, ["1"], GROUP_FULL)  # e.g., PSK-only for aggr
+        # If you prefer full auth set in aggr too, use AUTH_FULL instead of ["1"]
+        return main, aggr
+
+    # Default: keep your curated sets
     return MAIN_MODE_TRANSFORMS, AGGRESSIVE_MODE_TRANSFORMS
 
 def test_transforms(vpns: Dict, ip: str):
