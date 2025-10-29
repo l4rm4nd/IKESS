@@ -10,6 +10,7 @@ import logging
 import re
 import subprocess
 import sys
+from datetime import datetime
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple, Any
@@ -1064,12 +1065,15 @@ def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time:
     out_dir = Path("results")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # build paths inside the folder
-    xml_path = out_dir / "ikess_output.xml"
-    json_path = out_dir / "ikess_output.json"
-    html_path = out_dir / "ikess_report.html"
+    # timestamp to avoid overwrites, e.g. 20251029-134512
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    generate_xml_report(results, str(xml_path))  # cast to str if your funcs expect str
+    # build timestamped paths
+    xml_path = out_dir / f"{ts}_ikess_scan.xml"
+    json_path = out_dir / f"{ts}_ikess_scan.json"
+    html_path = out_dir / f"{ts}_ikess_scan.html"
+
+    generate_xml_report(results, str(xml_path))
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
@@ -1251,7 +1255,7 @@ def main() -> int:
     if not check_ike_dependency():
         return 1
 
-    logger.info("ikess v1.1 – IKE Security Scanner (Sequential Mode)")
+    logger.info("ikess – IKE Security Scanner")
     start = datetime.now()
     logger.info(f"Scan started at {start:%Y-%m-%d %H:%M:%S}")
     logger.info(f"Targets: {', '.join(args.targets)}")
