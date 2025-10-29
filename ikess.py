@@ -640,7 +640,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 # ------------------------------ HTML report -----------------------------
 def _sev_badge(sev: str) -> str:
     sev = sev.lower()
-    if sev == "critical": return '<span class="badge bg-danger">CRITICAL</span>'
+    if sev == "critical": return '<span class="badge bg-critical">CRITICAL</span>'
     if sev == "high": return '<span class="badge bg-danger">HIGH</span>'
     if sev == "medium": return '<span class="badge bg-warning text-dark">MEDIUM</span>'
     if sev == "low": return '<span class="badge bg-info text-dark">LOW</span>'
@@ -649,7 +649,7 @@ def _sev_badge(sev: str) -> str:
 
 def _sev_pill(sev: str, count: int) -> str:
     sev = sev.lower()
-    if sev == "critical": return f'<span class="badge rounded-pill text-bg-danger">CRITICAL {count}</span>'
+    if sev == "critical": return f'<span class="badge rounded-pill text-bg-critical">CRITICAL {count}</span>'
     if sev == "high": return f'<span class="badge rounded-pill text-bg-danger">HIGH {count}</span>'
     if sev == "medium": return f'<span class="badge rounded-pill text-bg-warning text-dark">MEDIUM {count}</span>'
     if sev == "low": return f'<span class="badge rounded-pill text-bg-info text-dark">LOW {count}</span>'
@@ -801,6 +801,18 @@ def generate_html_report(results: Dict, filename: str):
 <title>IKESS Report</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
+  /* Darker red for CRITICAL badges (f-string safe with doubled braces) */
+    :root {{
+      --bs-critical: #8B0000;
+      --bs-critical-rgb: 139, 0, 0;
+    }}
+
+    .badge.bg-critical,
+    .badge.text-bg-critical {{
+      background-color: var(--bs-critical) !important;
+      border-color: var(--bs-critical) !important;
+      color: #fff !important;
+    }}
   body {{ background:#ffffff; color:#0c1116; }}
   .container-fluid {{ padding: 24px; }}
   .card {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; }}
@@ -808,6 +820,15 @@ def generate_html_report(results: Dict, filename: str):
   code.text-wrap {{ white-space: normal; word-break: break-word; }}
   .accordion-button:not(.collapsed) {{ background:#f1f5f9; }}
 @media (prefers-color-scheme: dark) {{
+  :root {{
+    --bs-critical: #8B0000;
+    --bs-critical-rgb: 139, 0, 0;
+  }}
+  .badge.bg-critical,
+  .badge.text-bg-critical {{
+    background-color: var(--bs-critical) !important;
+    border-color: var(--bs-critical) !important;
+  }}
   :root {{
     --surface-0: #0f172a;
     --surface-1: #111827;
@@ -881,7 +902,7 @@ def generate_html_report(results: Dict, filename: str):
       <h1 class="h3 mb-0">IKE Security Scanner Report</h1>
       <div class="d-flex gap-2 flex-wrap">
         <span class="badge text-bg-light">Total hosts: {total}</span>
-        <span class="badge text-bg-danger">CRITICAL {crit}</span>
+        <span class="badge text-bg-critical">CRITICAL {crit}</span>
         <span class="badge text-bg-danger">HIGH {high}</span>
         <span class="badge text-bg-warning text-dark">MEDIUM {med}</span>
         <span class="badge text-bg-info text-dark">LOW {low}</span>
