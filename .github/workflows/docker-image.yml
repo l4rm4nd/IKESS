@@ -95,7 +95,7 @@ jobs:
         id: meta
         with:
           images: |
-            ghcr.io/${{ secrets.DOCKER_HUB_USERNAME }}/${{ env.REPO_NAME }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.REPO_NAME }}
           tags: |
             latest
             ${{ needs.changelog.outputs.version }}
@@ -109,6 +109,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+              VERSION=${{ needs.changelog.outputs.version }}
+          platforms: linux/amd64
 
   release:
     name: Release
