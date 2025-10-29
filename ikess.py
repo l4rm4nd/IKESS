@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ikess v1.1 - IKE Security Scanner
-Author: LRVT (https://github.com/l4rm4nd)
+Author: LRVT[](https://github.com/l4rm4nd)
 
 Changes in v1.1:
 - argparse: --fullalgs to broaden transform search sets
@@ -34,6 +34,11 @@ logger = logging.getLogger("ikess")
 
 FULLALGS: bool = False
 FINGERPRINT: bool = False
+CUSTOM_ENC: List[str] = []
+CUSTOM_HASH: List[str] = []
+CUSTOM_AUTH: List[str] = []
+CUSTOM_GROUP: List[str] = []
+ONLYCUSTOM: bool = False
 
 # --------------------------- Vulnerability text -------------------------
 
@@ -46,6 +51,7 @@ FLAWS = {
     "HASH_SHA1": "SHA1 hash algorithm detected - deprecated due to collision vulnerabilities",
     "DHG_1": "DH Group 1 (MODP-768) detected - weak DH group, should use Group 14+ (2048-bit+)",
     "DHG_2": "DH Group 2 (MODP-1024) detected - weak DH group, should use Group 14+ (2048-bit+)",
+    "DHG_5": "DH Group 5 (MODP-1536) detected - weak DH group, should use Group 14+ (2048-bit+)",
     "AUTH_PSK": "Pre-shared key authentication - consider certificate-based authentication",
     "AGG_MODE": "Aggressive Mode supported - may reveal PSK hash for offline attacks",
     "FING_VID": "Fingerprinting possible via VID payload - informational leak",
@@ -60,129 +66,319 @@ FLAWS = {
 # Group: 2=modp1024, 5=modp1536, 14=modp2048, 15=modp3072, 16=modp4096
 
 MAIN_MODE_TRANSFORMS = [
-    # ===== Common, practical mixes (fast to try) =====
-    "7/128,2,1,14",        # AES128-SHA1-PSK-G14 (very common legacy default)
-    "7/128,5,1,14",        # AES128-SHA256-PSK-G14 (common modern default)
-    "7/256,2,1,14",        # AES256-SHA1-PSK-G14
-    "7/256,5,1,14",        # AES256-SHA256-PSK-G14 (very common modern default)
+    # Modern-ish common PSK
+    "7/128,5,1,14",        # AES128-SHA256-PSK-G14  (popular)
+    "7/256,5,1,14",        # AES256-SHA256-PSK-G14  (popular)
+    "7/128,2,1,14",        # AES128-SHA1-PSK-G14    (legacy but still common)
+    "7/256,2,1,14",        # AES256-SHA1-PSK-G14    (legacy but still common)
 
-    "7/128,2,3,14",        # AES128-SHA1-RSA_Sig-G14
+    # RSA Sig profiles often seen on gateways
     "7/128,5,3,14",        # AES128-SHA256-RSA_Sig-G14
-    "7/256,2,3,14",        # AES256-SHA1-RSA_Sig-G14
     "7/256,5,3,14",        # AES256-SHA256-RSA_Sig-G14
+    "7/128,2,3,14",        # AES128-SHA1-RSA_Sig-G14
+    "7/256,2,3,14",        # AES256-SHA1-RSA_Sig-G14
 
-    # ===== 3DES fallbacks found in older deployments =====
-    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    # A few alt DH groups for coverage without huge scan cost
+    "7/128,2,1,2",         # AES128-SHA1-PSK-G2
+    "7/256,2,1,2",         # AES256-SHA1-PSK-G2
+    "7/128,5,1,5",         # AES128-SHA256-PSK-G5   ← **CRITICAL**
+    "7/256,5,1,5",         # AES256-SHA256-PSK-G5
+    "7/128,2,1,5",         # AES128-SHA1-PSK-G5
+    "7/256,2,1,5",         # AES256-SHA1-PSK-G5
+    "7/128,1,1,14",        # AES128-MD5-PSK-G14     ← MD5 flaw
+    "7/256,1,1,14",        # AES256-MD5-PSK-G14
+    "7/128,5,1,16",        # AES128-SHA256-PSK-G16
+    "7/256,5,1,16",        # AES256-SHA256-PSK-G16
+    "7/128,5,1,19",        # AES128-SHA256-PSK-ECP256 (IKEv2)
+    "7/256,5,1,19",        # AES256-SHA256-PSK-ECP256  
+
+    # 3DES legacy still around
     "5,2,1,14",            # 3DES-SHA1-PSK-G14
-    "5,2,3,2",             # 3DES-SHA1-RSA_Sig-G2
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
     "5,2,3,14",            # 3DES-SHA1-RSA_Sig-G14
+    "5,2,3,2",             # 3DES-SHA1-RSA_Sig-G2
+
+    # Weak but widely seen historically. Keep minimal to stay quick.
+    "1,2,1,14",            # DES-SHA1-PSK-G14      (deprecated)
+    "1,1,1,14",            # DES-MD5-PSK-G14       (deprecated)
+    "1,2,1,2",             # DES-SHA1-PSK-G2       (deprecated)
+    "1,1,1,2",             # DES-MD5-PSK-G2        (deprecated)  
 ]
 
 AGGRESSIVE_MODE_TRANSFORMS = [
-    # Aggressive mode kept PSK-only for practicality (only PSK can leak hash)
-    "7/128,2,1,14",        # AES128-SHA1-PSK-G14
+    # Modern-ish
+    "7/128,5,1,14",        # AES128-SHA256-PSK-G14
     "7/256,5,1,14",        # AES256-SHA256-PSK-G14
-    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "7/128,2,1,14",        # AES128-SHA1-PSK-G14
+    "7/256,2,1,14",        # AES256-SHA1-PSK-G14
+
+    # Alt DH to cover older setups
+    "7/128,2,1,2",         # AES128-SHA1-PSK-G2
+    "7/256,2,1,2",         # AES256-SHA1-PSK-G2
+    "7/128,5,1,5",         # AES128-SHA256-PSK-G5
+    "7/256,5,1,5",         # AES256-SHA256-PSK-G5
+    "7/128,2,1,5",         # AES128-SHA1-PSK-G5
+    "7/128,5,1,16",        # AES128-SHA256-PSK-G16
+    "7/256,5,1,16",        # AES256-SHA256-PSK-G16
+    "5,2,1,5",             # 3DES-SHA1-PSK-G5
+    "1,2,1,5",             # DES-SHA1-PSK-G5
+
+    # 3DES legacy
     "5,2,1,14",            # 3DES-SHA1-PSK-G14
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "5,1,1,14",            # 3DES-MD5-PSK-G14     (very old)
+    "5,1,1,2",             # 3DES-MD5-PSK-G2      (very old)
+
+    # DES legacy quick hits
+    "1,2,1,14",            # DES-SHA1-PSK-G14     (deprecated)
+    "1,1,1,14",            # DES-MD5-PSK-G14      (deprecated)
+    "1,2,1,2",             # DES-SHA1-PSK-G2      (deprecated)
+    "1,1,1,2",             # DES-MD5-PSK-G2       (deprecated)
 ]
 
-# Expanded set used when --fullalgs is provided (annotated and deduped)
-MAIN_MODE_TRANSFORMS_FULL = list(dict.fromkeys(MAIN_MODE_TRANSFORMS + [
-    # ===== DES (weak, legacy) =====
-    # G2 (modp1024)
-    "1,1,1,2",             # DES-MD5-PSK-G2
-    "1,1,3,2",             # DES-MD5-RSA_Sig-G2
-    "1,1,64221,2",         # DES-MD5-Hybrid_RSA-G2
-    "1,2,1,2",             # DES-SHA1-PSK-G2
-    "1,2,3,2",             # DES-SHA1-RSA_Sig-G2
-    "1,2,64221,2",         # DES-SHA1-Hybrid_RSA-G2
-    # G14 (modp2048)
-    "1,1,1,14",            # DES-MD5-PSK-G14
-    "1,1,3,14",            # DES-MD5-RSA_Sig-G14
-    "1,1,64221,14",        # DES-MD5-Hybrid_RSA-G14
-    "1,2,1,14",            # DES-SHA1-PSK-G14
-    "1,2,3,14",            # DES-SHA1-RSA_Sig-G14
-    "1,2,64221,14",        # DES-SHA1-Hybrid_RSA-G14
 
-    # ===== More 3DES variants (legacy but still seen) =====
+# ========================== FULL SETS (curated, expanded) ==========================
+# These significantly widen coverage versus the defaults, adding:
+# - DES/3DES across G2/G5/G14/G15/G16 (where sensible)
+# - AES-128/192/256 across SHA1/SHA256, PSK/RSA_Sig/Hybrid_RSA, with multiple DH groups
+# - A few AES+MD5 combos seen on very old gear (minimal, just enough for detection)
+# - Aggressive mode focuses on PSK variants only (hash-leak targets), with broad DH coverage
+
+MAIN_MODE_TRANSFORMS_FULL = list(dict.fromkeys(MAIN_MODE_TRANSFORMS + [
+    # ===== DES (very legacy/weak) =====
+    # PSK
+    "1,2,1,2",             # DES-SHA1-PSK-G2
+    "1,2,1,5",             # DES-SHA1-PSK-G5
+    "1,2,1,14",            # DES-SHA1-PSK-G14
+    "1,1,1,2",             # DES-MD5-PSK-G2
+    "1,1,1,14",            # DES-MD5-PSK-G14
+    # RSA_Sig / Hybrid
+    "1,2,3,2",             # DES-SHA1-RSA_Sig-G2
+    "1,2,3,14",            # DES-SHA1-RSA_Sig-G14
+    "1,1,3,2",             # DES-MD5-RSA_Sig-G2
+    "1,1,3,14",            # DES-MD5-RSA_Sig-G14
+    "1,2,64221,2",         # DES-SHA1-Hybrid_RSA-G2
+    "1,2,64221,14",        # DES-SHA1-Hybrid_RSA-G14
+    "1,1,64221,2",         # DES-MD5-Hybrid_RSA-G2
+    "1,1,64221,14",        # DES-MD5-Hybrid_RSA-G14
+
+    # ===== 3DES (legacy but common) =====
+    # PSK
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "5,2,1,5",             # 3DES-SHA1-PSK-G5
+    "5,2,1,14",            # 3DES-SHA1-PSK-G14
     "5,1,1,2",             # 3DES-MD5-PSK-G2
-    "5,1,3,2",             # 3DES-MD5-RSA_Sig-G2
-    "5,1,64221,2",         # 3DES-MD5-Hybrid_RSA-G2
     "5,1,1,14",            # 3DES-MD5-PSK-G14
+    # RSA_Sig / Hybrid
+    "5,2,3,2",             # 3DES-SHA1-RSA_Sig-G2
+    "5,2,3,14",            # 3DES-SHA1-RSA_Sig-G14
+    "5,1,3,2",             # 3DES-MD5-RSA_Sig-G2
     "5,1,3,14",            # 3DES-MD5-RSA_Sig-G14
-    "5,1,64221,14",        # 3DES-MD5-Hybrid_RSA-G14
     "5,2,64221,2",         # 3DES-SHA1-Hybrid_RSA-G2
     "5,2,64221,14",        # 3DES-SHA1-Hybrid_RSA-G14
-    "5,2,1,5",             # 3DES-SHA1-PSK-G5 (1536)
+    "5,1,64221,2",         # 3DES-MD5-Hybrid_RSA-G2
+    "5,1,64221,14",        # 3DES-MD5-Hybrid_RSA-G14
 
-    # ===== AES across broader DH groups (popular variants) =====
+    # ===== AES-128 (SHA1/SHA256; PSK/RSA/Hybrid) across multiple DH groups =====
+    # PSK
     "7/128,2,1,2",         # AES128-SHA1-PSK-G2
     "7/128,2,1,5",         # AES128-SHA1-PSK-G5
     "7/128,2,1,15",        # AES128-SHA1-PSK-G15
     "7/128,2,1,16",        # AES128-SHA1-PSK-G16
+    "7/128,5,1,2",         # AES128-SHA256-PSK-G2
+    "7/128,5,1,5",         # AES128-SHA256-PSK-G5
+    "7/128,5,1,15",        # AES128-SHA256-PSK-G15
+    "7/128,5,1,16",        # AES128-SHA256-PSK-G16
+    # RSA_Sig
+    "7/128,2,3,2",         # AES128-SHA1-RSA_Sig-G2
+    "7/128,2,3,5",         # AES128-SHA1-RSA_Sig-G5
+    "7/128,2,3,16",        # AES128-SHA1-RSA_Sig-G16
+    "7/128,5,3,2",         # AES128-SHA256-RSA_Sig-G2
+    "7/128,5,3,5",         # AES128-SHA256-RSA_Sig-G5
+    "7/128,5,3,16",        # AES128-SHA256-RSA_Sig-G16
+    # Hybrid
+    "7/128,2,64221,14",    # AES128-SHA1-Hybrid_RSA-G14
+    "7/128,5,64221,14",    # AES128-SHA256-Hybrid_RSA-G14
+    "7/128,2,64221,2",     # AES128-SHA1-Hybrid_RSA-G2
+    "7/128,5,64221,2",     # AES128-SHA256-Hybrid_RSA-G2
+
+    # ===== AES-192 (less common but present) =====
+    # PSK
+    "7/192,2,1,14",        # AES192-SHA1-PSK-G14
+    "7/192,5,1,14",        # AES192-SHA256-PSK-G14
+    "7/192,2,1,2",         # AES192-SHA1-PSK-G2
+    "7/192,5,1,2",         # AES192-SHA256-PSK-G2
+    # RSA_Sig
+    "7/192,2,3,14",        # AES192-SHA1-RSA_Sig-G14
+    "7/192,5,3,14",        # AES192-SHA256-RSA_Sig-G14
+
+    # ===== AES-256 (SHA1/SHA256; PSK/RSA/Hybrid) across multiple DH groups =====
+    # PSK
     "7/256,2,1,2",         # AES256-SHA1-PSK-G2
     "7/256,2,1,5",         # AES256-SHA1-PSK-G5
     "7/256,2,1,15",        # AES256-SHA1-PSK-G15
     "7/256,2,1,16",        # AES256-SHA1-PSK-G16
+    "7/256,5,1,2",         # AES256-SHA256-PSK-G2
+    "7/256,5,1,5",         # AES256-SHA256-PSK-G5
+    "7/256,5,1,15",        # AES256-SHA256-PSK-G15
+    "7/256,5,1,16",        # AES256-SHA256-PSK-G16
+    # RSA_Sig
+    "7/256,2,3,2",         # AES256-SHA1-RSA_Sig-G2
+    "7/256,2,3,5",         # AES256-SHA1-RSA_Sig-G5
+    "7/256,2,3,16",        # AES256-SHA1-RSA_Sig-G16
+    "7/256,5,3,2",         # AES256-SHA256-RSA_Sig-G2
+    "7/256,5,3,5",         # AES256-SHA256-RSA_Sig-G5
+    "7/256,5,3,16",        # AES256-SHA256-RSA_Sig-G16
+    # Hybrid
+    "7/256,2,64221,14",    # AES256-SHA1-Hybrid_RSA-G14
+    "7/256,5,64221,14",    # AES256-SHA256-Hybrid_RSA-G14
+    "7/256,2,64221,2",     # AES256-SHA1-Hybrid_RSA-G2
+    "7/256,5,64221,2",     # AES256-SHA256-Hybrid_RSA-G2
 
-    # ===== RSA_Sig/Hybrid with MD5 (seen on very old boxes) =====
+    # ===== Very old AES+MD5 edge cases (minimal coverage) =====
+    "7/128,1,1,14",        # AES128-MD5-PSK-G14
+    "7/256,1,1,14",        # AES256-MD5-PSK-G14
     "7/128,1,3,14",        # AES128-MD5-RSA_Sig-G14
     "7/256,1,3,14",        # AES256-MD5-RSA_Sig-G14
-    "7/128,1,64221,14",    # AES128-MD5-Hybrid_RSA-G14
-    "7/256,1,64221,14",    # AES256-MD5-Hybrid_RSA-G14
 ]))
 
-# Aggressive mode full set (PSK-only to target hash exposure)
 AGGRESSIVE_MODE_TRANSFORMS_FULL = list(dict.fromkeys(AGGRESSIVE_MODE_TRANSFORMS + [
-    # ===== AES PSK across more DH groups =====
+    # ===== AES-128 PSK =====
     "7/128,2,1,2",         # AES128-SHA1-PSK-G2
-    "7/256,2,1,2",         # AES256-SHA1-PSK-G2
     "7/128,2,1,5",         # AES128-SHA1-PSK-G5
+    "7/128,2,1,15",        # AES128-SHA1-PSK-G15
+    "7/128,2,1,16",        # AES128-SHA1-PSK-G16
+    "7/128,5,1,2",         # AES128-SHA256-PSK-G2
+    "7/128,5,1,5",         # AES128-SHA256-PSK-G5
+    "7/128,5,1,15",        # AES128-SHA256-PSK-G15
+    "7/128,5,1,16",        # AES128-SHA256-PSK-G16
+
+    # ===== AES-256 PSK =====
+    "7/256,2,1,2",         # AES256-SHA1-PSK-G2
     "7/256,2,1,5",         # AES256-SHA1-PSK-G5
-    "7/128,5,1,14",        # AES128-SHA256-PSK-G14
+    "7/256,2,1,15",        # AES256-SHA1-PSK-G15
+    "7/256,2,1,16",        # AES256-SHA1-PSK-G16
+    "7/256,5,1,2",         # AES256-SHA256-PSK-G2
+    "7/256,5,1,5",         # AES256-SHA256-PSK-G5
+    "7/256,5,1,15",        # AES256-SHA256-PSK-G15
     "7/256,5,1,16",        # AES256-SHA256-PSK-G16
 
-    # ===== 3DES PSK MD5 (very old, but shows up) =====
+    # ===== AES-192 PSK (rarer, but cheap to try) =====
+    "7/192,2,1,14",        # AES192-SHA1-PSK-G14
+    "7/192,2,1,2",         # AES192-SHA1-PSK-G2
+    "7/192,5,1,14",        # AES192-SHA256-PSK-G14
+    "7/192,5,1,2",         # AES192-SHA256-PSK-G2
+
+    # ===== 3DES PSK =====
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "5,2,1,5",             # 3DES-SHA1-PSK-G5
+    "5,2,1,14",            # 3DES-SHA1-PSK-G14
     "5,1,1,2",             # 3DES-MD5-PSK-G2
     "5,1,1,14",            # 3DES-MD5-PSK-G14
 
-    # ===== DES PSK additions (weak, legacy; helpful for coverage) =====
-    "1,1,1,2",             # DES-MD5-PSK-G2
+    # ===== DES PSK (weak legacy) =====
     "1,2,1,2",             # DES-SHA1-PSK-G2
-    "1,1,1,14",            # DES-MD5-PSK-G14
-    "1,2,1,14",            # DES-SHA1-PSK-G14
     "1,2,1,5",             # DES-SHA1-PSK-G5
+    "1,2,1,14",            # DES-SHA1-PSK-G14
+    "1,1,1,2",             # DES-MD5-PSK-G2
+    "1,1,1,14",            # DES-MD5-PSK-G14
 ]))
 
 # Candidate spaces used only when --fullalgs is on
-ENC_FULL   = ["5", "7/128", "7/192", "7/256"]        # 3DES, AES-128/192/256
-HASH_FULL  = ["1", "2", "5"]                         # MD5, SHA1, SHA256 (extend if your ike-scan supports more)
+ENC_FULL   = ["1", "5", "7/128", "7/192", "7/256"]   # 1=DES, 5=3DES, AES-128/192/256
+HASH_FULL  = ["1", "2", "5"]                         # MD5, SHA1, SHA256
 AUTH_FULL  = ["1", "3", "64221"]                     # PSK, RSA_Sig, Hybrid_RSA
-GROUP_FULL = ["2", "5", "14", "15", "16"]            # add more if you want
+GROUP_FULL = ["2", "5", "14", "15", "16"]
 
-def _build_transform_space(encs, hashes, auths, groups):
+def _build_transform_space(encs: List[str], hashes: List[str], auths: List[str], groups: List[str]) -> List[str]:
+    """Builds a list of transform strings from the Cartesian product of input lists."""
     return [f"{e},{h},{a},{g}" for e, h, a, g in product(encs, hashes, auths, groups)]
 
 # ----------------------------- Helpers ----------------------------------
 
 def run_command(cmd: List[str], timeout: int = 30) -> Tuple[str, str, int]:
+    """Executes a shell command with timeout and captures output."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return (p.stdout.strip(), p.stderr.strip(), p.returncode)
     except subprocess.TimeoutExpired:
         logger.warning(f"Command timed out: {' '.join(cmd)}")
-        return ("", "", 124)
+        return ("", "Timeout expired", 124)
     except Exception as e:
-        logger.error(f"Command failed: {' '.join(cmd)} - {e}")
+        logger.error(f"Command failed: {' '.join(cmd)} - {str(e)}")
         return ("", str(e), 1)
 
 def check_ike_dependency() -> bool:
+    """Checks if ike-scan is installed and available in PATH."""
     out, _, rc = run_command(["which", "ike-scan"], timeout=5)
     if rc == 0 and out:
         logger.info(f"ike-scan found: {out.splitlines()[0]}")
         return True
     logger.error("ike-scan not found. Please install ike-scan to continue.")
     return False
+
+# ----------------------------- Aliases & Parsing -------------------------
+# Friendly aliases -> ike-scan numeric tokens
+ENC_ALIASES = {
+    "DES": "1",
+    "3DES": "5",
+    "AES": "7/128",   # fallback for plain 'AES'
+    "AES128": "7/128", "AES-128": "7/128", "AES 128": "7/128",
+    "AES192": "7/192", "AES-192": "7/192", "AES 192": "7/192",
+    "AES256": "7/256", "AES-256": "7/256", "AES 256": "7/256",
+}
+HASH_ALIASES = {
+    "MD5": "1",
+    "SHA1": "2", "SHA-1": "2", "SHA 1": "2",
+    "SHA256": "5", "SHA-256": "5", "SHA 256": "5",
+}
+AUTH_ALIASES = {
+    "PSK": "1",
+    "RSA": "3", "RSA_SIG": "3", "RSA-SIG": "3", "RSA SIG": "3",
+    "HYBRID": "64221", "HYBRID_RSA": "64221", "HYBRID-RSA": "64221", "HYBRID RSA": "64221",
+}
+GROUP_ALIASES = {
+    "G1": "1", "MODP768": "1", "MODP 768": "1", "MODP-768": "1",
+    "G2": "2", "MODP1024": "2", "MODP 1024": "2", "MODP-1024": "2",
+    "G5": "5", "MODP1536": "5", "MODP 1536": "5", "MODP-1536": "5",
+    "G14": "14", "MODP2048": "14", "MODP 2048": "14", "MODP-2048": "14",
+    "G15": "15", "MODP3072": "15", "MODP 3072": "15", "MODP-3072": "15",
+    "G16": "16", "MODP4096": "16", "MODP 4096": "16", "MODP-4096": "16",
+}
+
+def _normalize_token(tok: str, aliases: Dict[str, str]) -> Optional[str]:
+    """Normalizes a token using aliases or returns None if invalid."""
+    if not tok:
+        return None
+    raw = tok.strip()
+    if not raw:
+        return None
+    # direct numbers or AES notation like 7/256 are accepted
+    if raw.replace("/", "").isdigit():
+        return raw
+    key = raw.upper().replace("-", "").replace(" ", "")
+    # try direct alias first
+    if key in {k.replace("-", "").replace(" ", "") for k in aliases}:
+        # find the first matching alias key (to keep code simple)
+        for k, v in aliases.items():
+            if key == k.upper().replace("-", "").replace(" ", ""):
+                return v
+    return None
+
+def _parse_list_arg(raw: Optional[str], aliases: Dict[str, str]) -> List[str]:
+    """Parses a comma-separated string into normalized tokens, removing duplicates."""
+    if not raw:
+        return []
+    vals = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        norm = _normalize_token(part, aliases)
+        if norm:
+            vals.append(norm)
+    # de-dup while keeping order
+    return list(dict.fromkeys(vals))
 
 # -------------------------- Scan primitives -----------------------------
 
@@ -203,6 +399,7 @@ BODY_MARKERS_V2 = [
 ]
 
 def _has_positive_summary(text: str) -> bool:
+    """Checks if the output indicates a positive response summary."""
     m_notify = re.search(r"(\d+)\s+returned\s+notify", text, re.I)
     m_hs = re.search(r"(\d+)\s+returned\s+handshake", text, re.I)
     n_notify = int(m_notify.group(1)) if m_notify else 0
@@ -210,15 +407,18 @@ def _has_positive_summary(text: str) -> bool:
     return (n_notify > 0) or (n_hs > 0)
 
 def _has_body_markers(text: str, markers: List[str]) -> bool:
+    """Checks if the text contains any of the specified body markers."""
     return any(re.search(p, text, re.I) for p in markers)
 
 def _strip_banner(text: str) -> str:
+    """Strips ike-scan banner lines from the output."""
     return "\n".join(
         ln for ln in text.splitlines()
         if not ln.startswith("Starting ike-scan") and not ln.startswith("Ending ike-scan")
     )
 
 def _parse_vids(handshake: str) -> List[str]:
+    """Parses Vendor ID (VID) payloads from handshake output, filtering common ones."""
     vids = []
     for m in re.finditer(r"VID=([a-fA-F0-9]+)\s+\(([^)]+)\)", handshake):
         desc = m.group(2).strip()
@@ -228,9 +428,11 @@ def _parse_vids(handshake: str) -> List[str]:
     return vids
 
 def _parse_sa_block(handshake: str) -> List[str]:
+    """Parses SA blocks from handshake output."""
     return re.findall(r"SA=\(([^)]+)\)", handshake)
 
 def _collect_weaknesses_from_text(txt: str) -> List[str]:
+    """Collects weak algorithm indicators from text."""
     wk = []
     if "Enc=DES" in txt:
         wk.append("DES")
@@ -244,13 +446,16 @@ def _collect_weaknesses_from_text(txt: str) -> List[str]:
         wk.append("DH Group 1 (MODP-768)")
     if "Group=2:modp1024" in txt or "DH_Group=2:modp1024" in txt:
         wk.append("DH Group 2 (MODP-1024)")
+    if "Group=5:modp1536" in txt or "DH_Group=5:modp1536" in txt:
+        wk.append("DH Group 5 (MODP-1536)")
     if "Auth=PSK" in txt:
         wk.append("PSK")
     return sorted(set(wk))
 
 # --------------------------- Scanning steps ------------------------------
 
-def check_ikev1(vpns: Dict, ip: str):
+def check_ikev1(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """Checks for IKEv1 support and collects initial handshake data."""
     logger.info(f"Discovering IKEv1 services for {ip}")
     cmd = [
         "ike-scan",
@@ -268,10 +473,11 @@ def check_ikev1(vpns: Dict, ip: str):
         vids = _parse_vids(_strip_banner(out))
         for v in vids:
             vpns[ip].setdefault("vid", [])
-            if v not in [x for x in vpns[ip]["vid"]]:
+            if v not in vpns[ip]["vid"]:
                 vpns[ip]["vid"].append(v)
 
-def check_ikev2(vpns: Dict, ip: str):
+def check_ikev2(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """Checks for IKEv2 support."""
     logger.info(f"Checking IKEv2 support for {ip}")
     out, _, _ = run_command(["ike-scan", "--ikev2", ip], timeout=10)
     if not out:
@@ -283,12 +489,13 @@ def check_ikev2(vpns: Dict, ip: str):
         vpns[ip]["ikev2_handshake"] = out
 
 def fingerprint_backoff(
-    vpns: Dict,
+    vpns: Dict[str, Dict[str, Any]],
     ip: str,
     transform: Optional[str] = None,
     ike_scan_bin: str = "ike-scan",
     timeout: int = 300,
 ) -> None:
+    """Performs backoff fingerprinting to guess the IKE implementation."""
     logger.info(f"Fingerprinting {ip} via backoff analysis"
                 f"{' with transform ' + transform if transform else ''}")
     cmd = [ike_scan_bin, "--showbackoff"]
@@ -326,28 +533,61 @@ def fingerprint_backoff(
                     f"{' | pattern: ' + ', '.join(pattern) if pattern else ''}")
 
 def _try_transform(ip: str, transform: str, aggressive: bool = False) -> str:
+    """Attempts a single transform proposal and returns the stripped output."""
     base = ["ike-scan"]
     if aggressive:
         base += ["--aggressive"]
     base += ["--trans", transform, ip]
-    out, _, _ = run_command(base, timeout=5)
+    out, _, _ = run_command(base, timeout=10)
     return _strip_banner(out)
 
 def _transform_sets() -> Tuple[List[str], List[str]]:
-    """Return (main, aggressive) transform lists.
-       Curated by default; exhaustive only with --fullalgs."""
+    """
+    Returns (main, aggressive) transform lists, honoring:
+    - --onlycustom : use ONLY the custom cross-product (if any lists provided)
+    - custom lists (if provided) are merged with curated/default sets when --onlycustom is not set
+    - --fullalgs : use the expanded curated FULL sets (unless --onlycustom is given)
+    Aggressive mode logic: if no custom AUTH provided, default to PSK ('1') for aggr.
+    """
+    # Build custom cross-product if the user supplied any dimension
+    custom_main: List[str] = []
+    custom_aggr: List[str] = []
+
+    any_custom = bool(CUSTOM_ENC or CUSTOM_HASH or CUSTOM_AUTH or CUSTOM_GROUP)
+    if any_custom:
+        encs   = CUSTOM_ENC   or ENC_FULL   # be generous if user passed partials
+        hashes = CUSTOM_HASH  or HASH_FULL
+        auths  = CUSTOM_AUTH  or AUTH_FULL
+        groups = CUSTOM_GROUP or GROUP_FULL
+
+        custom_main = _build_transform_space(encs, hashes, auths, groups)
+
+        # Aggressive defaults to PSK if user didn't specify AUTH explicitly
+        aggr_auths = CUSTOM_AUTH or ["1"]   # PSK only if no explicit custom auths
+        custom_aggr = _build_transform_space(encs, hashes, aggr_auths, groups)
+
+    # If ONLY custom requested and we have a custom space, return that
+    if ONLYCUSTOM and any_custom:
+        # Keep size sane by de-duping
+        return (list(dict.fromkeys(custom_main)), list(dict.fromkeys(custom_aggr)))
+
+    # Otherwise, start from curated defaults or FULL curated sets
     if FULLALGS:
-        # Exhaustive sweep when --fullalgs is set
-        main = _build_transform_space(ENC_FULL, HASH_FULL, AUTH_FULL, GROUP_FULL)
-        # You can narrow aggressive if you want fewer packets, or just reuse the same:
-        aggr = _build_transform_space(ENC_FULL, HASH_FULL, ["1"], GROUP_FULL)  # e.g., PSK-only for aggr
-        # If you prefer full auth set in aggr too, use AUTH_FULL instead of ["1"]
-        return main, aggr
+        base_main = list(MAIN_MODE_TRANSFORMS_FULL)
+        base_aggr = list(AGGRESSIVE_MODE_TRANSFORMS_FULL)
+    else:
+        base_main = list(MAIN_MODE_TRANSFORMS)
+        base_aggr = list(AGGRESSIVE_MODE_TRANSFORMS)
 
-    # Default: keep your curated sets
-    return MAIN_MODE_TRANSFORMS, AGGRESSIVE_MODE_TRANSFORMS
+    # If custom lists exist, merge them in
+    if any_custom:
+        base_main = list(dict.fromkeys(base_main + custom_main))
+        base_aggr = list(dict.fromkeys(base_aggr + custom_aggr))
 
-def test_transforms(vpns: Dict, ip: str):
+    return base_main, base_aggr
+
+def test_transforms(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """Tests Main Mode transforms and collects accepted ones."""
     logger.info(f"Testing encryption algorithms for {ip}")
     transforms_main, _ = _transform_sets()
     accepted_sa: List[str] = []
@@ -371,7 +611,8 @@ def test_transforms(vpns: Dict, ip: str):
     vpns[ip]["transforms"] = list(dict.fromkeys(accepted_sa))
     vpns[ip]["accepted_transform_keys_main"] = list(dict.fromkeys(accepted_keys))
 
-def test_aggressive_mode(vpns: Dict, ip: str):
+def test_aggressive_mode(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """Tests Aggressive Mode transforms if IKEv1 is supported."""
     if not vpns[ip].get("v1"):
         vpns[ip]["aggressive"] = []
         vpns[ip]["accepted_transform_keys_aggr"] = []
@@ -400,7 +641,8 @@ def test_aggressive_mode(vpns: Dict, ip: str):
     vpns[ip]["aggressive"] = list(dict.fromkeys(accepted_sa))
     vpns[ip]["accepted_transform_keys_aggr"] = list(dict.fromkeys(accepted_keys))
 
-def test_ikev2_features(vpns: Dict, ip: str):
+def test_ikev2_features(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """Tests additional IKEv2 features like CERTREQ support."""
     if not vpns[ip].get("v2"):
         return
     out, _, _ = run_command(["ike-scan", "--ikev2", "--certreq", ip], timeout=5)
@@ -409,7 +651,8 @@ def test_ikev2_features(vpns: Dict, ip: str):
 
 # --------------------------- Analysis / Reports --------------------------
 
-def analyze_security_flaws(vpns: Dict) -> Dict:
+def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Analyzes collected data for security flaws and summarizes results."""
     logger.info("Analyzing security flaws")
     results = {"services": {}, "summary": {}}
 
@@ -426,7 +669,7 @@ def analyze_security_flaws(vpns: Dict) -> Dict:
         }
         added = set()
 
-        def add_flaw(desc: str, sev: str, payload: str = ""):
+        def add_flaw(desc: str, sev: str, payload: str = "") -> None:
             if (ip, desc) in added:
                 return
             results["services"][ip]["flaws"].append({"description": desc, "severity": sev, "data": payload})
@@ -441,20 +684,28 @@ def analyze_security_flaws(vpns: Dict) -> Dict:
         if data.get("aggressive"):
             add_flaw(FLAWS["AGG_MODE"], "critical")
 
-        # Aggregate text for weaknesses
-        agg_text_parts = []
+        # --- Build discovery vs confirmed text blobs ---
+        text_discovery = []
         if "handshake" in data:
-            agg_text_parts.append(_strip_banner(data["handshake"]))
+            text_discovery.append(_strip_banner(data["handshake"]))
         if "ikev2_handshake" in data:
-            agg_text_parts.append(_strip_banner(data["ikev2_handshake"]))
+            text_discovery.append(_strip_banner(data["ikev2_handshake"]))
+        text_discovery = " ".join(text_discovery)
+
+        text_confirmed_parts = []
         for sa in data.get("transforms", []):
-            agg_text_parts.append(f"SA=({sa})")
+            text_confirmed_parts.append(f"SA=({sa})")
         for sa in data.get("aggressive", []):
-            agg_text_parts.append(f"SA=({sa})")
-        agg_text = " ".join(agg_text_parts)
+            text_confirmed_parts.append(f"SA=({sa})")
+        text_confirmed = " ".join(text_confirmed_parts)
+
+        # If --onlycustom is set, treat the report as "confirmed-only".
+        # Otherwise keep current behavior: discovery + confirmed.
+        agg_sources = [text_confirmed] if ONLYCUSTOM else [text_discovery, text_confirmed]
+        agg_text = " ".join(s for s in agg_sources if s)
 
         # Weak crypto
-        if "Enc=DES" in agg_text and "Enc=3DES" not in agg_text:
+        if "Enc=DES" in agg_text:
             add_flaw(FLAWS["ENC_DES"], "high", agg_text)
         if "Enc=3DES" in agg_text:
             add_flaw(FLAWS["ENC_3DES"], "medium", agg_text)
@@ -466,6 +717,8 @@ def analyze_security_flaws(vpns: Dict) -> Dict:
             add_flaw(FLAWS["DHG_1"], "high", agg_text)
         if "Group=2:modp1024" in agg_text or "DH_Group=2:modp1024" in agg_text:
             add_flaw(FLAWS["DHG_2"], "high", agg_text)
+        if "Group=5:modp1536" in agg_text or "DH_Group=5:modp1536" in agg_text:
+            add_flaw(FLAWS["DHG_5"], "high", agg_text)
         if "Auth=PSK" in agg_text:
             add_flaw(FLAWS["AUTH_PSK"], "medium", agg_text)
 
@@ -528,6 +781,10 @@ def generate_html_report(results: Dict, filename: str):
     med = results["summary"]["medium"]
     low = results["summary"]["low"]
     info = results["summary"]["info"]
+    confirmed_only = results.get("scan_info", {}).get("confirmed_only", False)
+
+    scope_badge = '<span class="badge text-bg-primary">Scope: --onlycustom</span>' if confirmed_only \
+                  else '<span class="badge text-bg-light">Scope: default</span>'
 
     host_cards = []
 
@@ -733,6 +990,7 @@ def generate_html_report(results: Dict, filename: str):
         <span class="badge text-bg-warning text-dark">MEDIUM {med}</span>
         <span class="badge text-bg-info text-dark">LOW {low}</span>
         <span class="badge text-bg-secondary text-dark">INFO {info}</span>
+        {scope_badge}
       </div>
     </div>
 
@@ -768,42 +1026,55 @@ def generate_html_report(results: Dict, filename: str):
     with open(filename, "w", encoding="utf-8") as f:
         f.write(html)
 
-def generate_xml_report(results: Dict, filename: str):
+def generate_xml_report(results: Dict[str, Any], filename: str) -> None:
+    """Generates an XML report from analysis results."""
     root = ET.Element("iker_scan")
+
+    # ---- scan_info as subelements (robust for non-strings) ----
     scan_info = results.get("scan_info", {})
-    ET.SubElement(root, "scan_info", **scan_info)
+    scan_info_el = ET.SubElement(root, "scan_info")
+    for k, v in scan_info.items():
+        child = ET.SubElement(scan_info_el, k)
+        if isinstance(v, (list, tuple, set)):
+            child.text = ", ".join(map(str, v))
+        elif v is None:
+            child.text = ""
+        else:
+            child.text = str(v)
+
     summary = ET.SubElement(root, "summary")
     for k, v in results["summary"].items():
         ET.SubElement(summary, k).text = str(v)
 
     services = ET.SubElement(root, "services")
     for ip, svc in results["services"].items():
-        s = ET.SubElement(services, "service", ip=ip)
+        s = ET.SubElement(services, "service", ip=str(ip))
         meta = ET.SubElement(s, "meta")
-        ET.SubElement(meta, "versions").text = ", ".join(svc["meta"]["versions"])
-        ET.SubElement(meta, "implementation").text = svc["meta"]["implementation"]
+        ET.SubElement(meta, "versions").text = ", ".join(svc["meta"].get("versions", []))
+        ET.SubElement(meta, "implementation").text = str(svc["meta"].get("implementation") or "N/A")
 
         acc = ET.SubElement(s, "accepted_transforms")
         main = ET.SubElement(acc, "main")
-        for t in svc["accepted_transforms"]["main"]:
-            ET.SubElement(main, "sa").text = t
+        for t in svc["accepted_transforms"].get("main", []):
+            ET.SubElement(main, "sa").text = str(t)
         aggr = ET.SubElement(acc, "aggressive")
-        for t in svc["accepted_transforms"]["aggressive"]:
-            ET.SubElement(aggr, "sa").text = t
+        for t in svc["accepted_transforms"].get("aggressive", []):
+            ET.SubElement(aggr, "sa").text = str(t)
 
         weak = ET.SubElement(s, "weak_algorithms")
-        for w in svc["weak_algorithms"]:
-            ET.SubElement(weak, "alg").text = w
+        for w in svc.get("weak_algorithms", []):
+            ET.SubElement(weak, "alg").text = str(w)
 
         flaws = ET.SubElement(s, "flaws")
-        for fitem in svc["flaws"]:
-            ET.SubElement(flaws, "flaw", severity=fitem["severity"]).text = fitem["description"]
+        for fitem in svc.get("flaws", []):
+            ET.SubElement(flaws, "flaw", severity=str(fitem["severity"])).text = str(fitem["description"])
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ", level=0)
     tree.write(filename, encoding="utf-8", xml_declaration=True)
 
-def print_console_report(results: Dict):
+def print_console_report(results: Dict[str, Any]) -> None:
+    """Prints a console-friendly summary of the analysis results."""
     s = results["summary"]
     line = "=" * 70
     logger.info("\n" + line + "\n                     SCAN RESULTS SUMMARY                     \n" + line)
@@ -833,13 +1104,15 @@ def print_console_report(results: Dict):
                     logger.info(f"    - Aggressive: {t}")
         logger.info("")
 
-def generate_reports(vpns: Dict, start_time: str, end_time: str):
+def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time: str) -> None:
+    """Generates XML, JSON, HTML reports and prints console summary."""
     logger.info("Generating reports...")
     results = analyze_security_flaws(vpns)
     results["scan_info"] = {
         "start_time": start_time,
         "end_time": end_time,
         "targets": list(vpns.keys()),
+        "confirmed_only": ONLYCUSTOM,
     }
 
     xml_file = "ikess_output.xml"
@@ -860,7 +1133,8 @@ def generate_reports(vpns: Dict, start_time: str, end_time: str):
 
 # ------------------------------ Orchestration ---------------------------
 
-def scan_target(ip: str) -> Dict:
+def scan_target(ip: str) -> Dict[str, Dict[str, Any]]:
+    """Performs a full scan on a single target IP."""
     logger.info(f"Starting comprehensive scan of {ip}")
     vpn = {ip: {
         "v1": False, "v2": False,
@@ -909,26 +1183,127 @@ def scan_target(ip: str) -> Dict:
     logger.info(f"Completed analysis of {ip}")
     return vpn
 
-def main():
-    global FULLALGS, FINGERPRINT
+def main() -> int:
+    """Main entry point for the script."""
+    global FULLALGS, FINGERPRINT, CUSTOM_ENC, CUSTOM_HASH, CUSTOM_AUTH, CUSTOM_GROUP, ONLYCUSTOM
 
+    # -------- argparse (improved help & examples) --------
     parser = argparse.ArgumentParser(
-        description="ikess v1.1 - IKE Security Scanner",
-        epilog="Scans for IKE/IPsec VPNs and presents enhanced, readable reports.",
+        prog="ikess",
+        description=(
+            "ikess v1.1 – IKE Security Scanner\n"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  # Curated defaults only\n"
+            "  sudo python3 ikess.py 10.0.0.1\n\n"
+            "  # Expanded curated coverage (adds legacy/rare variants)\n"
+            "  sudo python3 ikess.py 10.0.0.1 --fullalgs\n\n"
+            "  # Try defaults PLUS a DES cross-product (merged with curated defaults)\n"
+            "  sudo python3 ikess.py 10.0.0.1 --enc DES\n\n"
+            "  # Only your custom cross-product (no curated defaults)\n"
+            "  sudo python3 ikess.py 10.0.0.1 --enc DES --onlycustom\n\n"
+            "  # Custom space using names or ike-scan tokens (mixed allowed)\n"
+            "  sudo python3 ikess.py 10.0.0.1 \\\n"
+            "       --enc AES128,3DES,1,7/256 \\\n"
+            "       --hash SHA1,SHA256,1 \\\n"
+            "       --auth PSK,RSA,HYBRID \\\n"
+            "       --group G2,G14,16\n\n"
+            "Notes:\n"
+            "  • Names are mapped to ike-scan tokens:\n"
+            "      ENC:  DES→1, 3DES→5, AES128→7/128, AES192→7/192, AES256→7/256, AES→7/128\n"
+            "      HASH: MD5→1, SHA1→2, SHA256→5\n"
+            "      AUTH: PSK→1, RSA (RSA_Sig)→3, HYBRID (Hybrid_RSA)→64221\n"
+            "      DH:   G1→1, G2→2, G5→5, G14→14, G15→15, G16→16, MODPxxxx→matching group\n"
+            "  • Aggressive mode focuses on PSK by default; include --auth if you want RSA/HYBRID\n"
+            "    proposals in the aggressive cross-product as well.\n"
+            "  • --fingerprint runs --showbackoff and, if needed, retries with a known accepted\n"
+            "    transform discovered during the scan."
+        ),
     )
-    parser.add_argument("targets", nargs="+", help="One or more target IP addresses or hostnames")
-    parser.add_argument("-t", "--threads", type=int, default=1, help="Number of concurrent threads (default: 1)")
-    parser.add_argument("--fullalgs", action="store_true",
-                        help="Use a broader transform search set (more enc/hash/auth/group combinations)")
-    parser.add_argument("--fingerprint", action="store_true",
-                        help="Run --showbackoff fingerprinting (and retry with a known accepted transform if available)")
+
+    parser.add_argument(
+        "targets", nargs="+",
+        help="One or more target IPs/hostnames to probe (space-separated)."
+    )
+    parser.add_argument(
+        "-t", "--threads", type=int, default=1,
+        help="Number of concurrent worker threads (default: 1)."
+    )
+    parser.add_argument(
+        "--fullalgs", action="store_true",
+        help=(
+            "Use expanded curated transform sets (adds legacy DES/3DES and broader AES/DH variants).\n"
+            "If you also pass --enc/--hash/--auth/--group, those custom combos are MERGED in.\n"
+            "Use --onlycustom to skip curated sets entirely."
+        ),
+    )
+    parser.add_argument(
+        "--fingerprint", action="store_true",
+        help=(
+            "Run ike-scan --showbackoff to guess implementation. If the generic attempt is inconclusive\n"
+            "and we negotiated at least one transform, retry --showbackoff with the first accepted\n"
+            "transform to improve the fingerprint."
+        ),
+    )
+
+    # Custom transform space (names or ike-scan tokens; merged unless --onlycustom)
+    parser.add_argument(
+        "--enc",
+        help=(
+            "Comma-separated ENC list. Accepts names or tokens: AES,AES128,AES192,AES256,3DES,DES\n"
+            "or 1,5,7/128,7/192,7/256. Example: --enc AES128,3DES,1,7/256"
+        ),
+    )
+    parser.add_argument(
+        "--hash",
+        help=(
+            "Comma-separated HASH list. Accepts names or tokens: MD5,SHA1,SHA256 or 1,2,5.\n"
+            "Example: --hash SHA1,SHA256,1"
+        ),
+    )
+    parser.add_argument(
+        "--auth",
+        help=(
+            "Comma-separated AUTH list. Accepts names or tokens: PSK,RSA,HYBRID or 1,3,64221.\n"
+            "Merged into Main & Aggressive cross-products. If omitted, Aggressive defaults to PSK only."
+        ),
+    )
+    parser.add_argument(
+        "--group", "--dh", dest="group",
+        help=(
+            "Comma-separated DH groups. Accepts names or tokens: G1,G2,G5,G14,G15,G16 or 1,2,5,14,15,16,\n"
+            "and MODP aliases like MODP1024, MODP2048. Example: --group G2,G14,16"
+        ),
+    )
+    parser.add_argument(
+        "--onlycustom", action="store_true",
+        help=(
+            "Do NOT use curated transform sets. Scan ONLY the cross-product of your custom ENC/HASH/AUTH/GROUP.\n"
+            "If you omit --auth, Aggressive still defaults to PSK."
+        ),
+    )
 
     args = parser.parse_args()
+
+    CUSTOM_ENC   = _parse_list_arg(args.enc,   ENC_ALIASES)
+    CUSTOM_HASH  = _parse_list_arg(args.hash,  HASH_ALIASES)
+    CUSTOM_AUTH  = _parse_list_arg(args.auth,  AUTH_ALIASES)
+    CUSTOM_GROUP = _parse_list_arg(args.group, GROUP_ALIASES)
+    ONLYCUSTOM   = bool(args.onlycustom)
+
+    if CUSTOM_ENC or CUSTOM_HASH or CUSTOM_AUTH or CUSTOM_GROUP:
+        logger.info("Custom transform space requested via CLI:")
+        logger.info(f"  ENC={CUSTOM_ENC or '∅'}  HASH={CUSTOM_HASH or '∅'}  AUTH={CUSTOM_AUTH or '∅'}  GROUP={CUSTOM_GROUP or '∅'}")
+        if ONLYCUSTOM:
+            logger.info("Using ONLY custom cross-product (--onlycustom).")
+
     FULLALGS = bool(args.fullalgs)
     FINGERPRINT = bool(args.fingerprint)
 
     logger.info("ikess v1.1 - IKE Security Scanner")
-    logger.info("Author: LRVT (https://github.com/l4rm4nd)")
+    logger.info("Author: LRVT[](https://github.com/l4rm4nd)")
     logger.info("╰─⠠⠵ Original (iker.py) by Julio Gomez, enhanced by nullenc0de")
 
     if not check_ike_dependency():
@@ -944,7 +1319,7 @@ def main():
     logger.info(f"Scan started at {start.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"Targets: {', '.join(args.targets)} | Threads: {args.threads}")
 
-    all_vpns: Dict[str, Dict] = {}
+    all_vpns: Dict[str, Dict[str, Any]] = {}
     if args.threads > 1:
         with ThreadPoolExecutor(max_workers=args.threads) as ex:
             fut_map = {ex.submit(scan_target, ip): ip for ip in args.targets}
