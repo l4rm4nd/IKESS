@@ -226,6 +226,12 @@ MAIN_MODE_TRANSFORMS_FULL = list(dict.fromkeys(MAIN_MODE_TRANSFORMS + [
     "7/256,1,1,14",   # AES256-MD5-PSK-MODP2048
     "7/128,1,3,14",   # AES128-MD5-RSA_SIG-MODP2048
     "7/256,1,3,14",   # AES256-MD5-RSA_SIG-MODP2048
+    
+    # === AES + ECP
+    "7/128,5,1,19",   # AES128-SHA256-PSK-ECP256
+    "7/256,5,1,19",   # AES256-SHA256-PSK-ECP256
+    "7/128,5,3,19",   # AES128-SHA256-RSA_SIG-ECP256
+    "7/256,5,3,19",   # AES256-SHA256-RSA_SIG-ECP256
 ]))
 
 AGGRESSIVE_MODE_TRANSFORMS_FULL = list(dict.fromkeys(AGGRESSIVE_MODE_TRANSFORMS + [
@@ -263,9 +269,9 @@ AGGRESSIVE_MODE_TRANSFORMS_FULL = list(dict.fromkeys(AGGRESSIVE_MODE_TRANSFORMS 
 
 # Full cross-product spaces (used only with --fullalgs and custom args)
 ENC_FULL   = ["1", "5", "7/128", "7/192", "7/256"]
-HASH_FULL  = ["1", "2", "5"]
+HASH_FULL  = ["1", "2", "4", "5", "6"]
 AUTH_FULL  = ["1", "3", "64221"]
-GROUP_FULL = ["2", "5", "14", "15", "16"]
+GROUP_FULL = ["2", "5", "14", "15", "16", "19", "20", "21"]
 
 def _build_transform_space(encs: List[str], hashes: List[str], auths: List[str], groups: List[str]) -> List[str]:
     return [f"{e},{h},{a},{g}" for e, h, a, g in product(encs, hashes, auths, groups)]
