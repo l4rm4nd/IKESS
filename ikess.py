@@ -1044,26 +1044,118 @@ def scan_target(ip: str) -> Dict[str, Any]:
 def main() -> int:
     global FULLALGS, FINGERPRINT, CUSTOM_ENC, CUSTOM_HASH, CUSTOM_AUTH, CUSTOM_GROUP, ONLYCUSTOM
 
+    class SmartFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawTextHelpFormatter):
+        pass
+
     parser = argparse.ArgumentParser(
         prog="ikess",
-        description="ikess v1.1 – IKE Security Scanner (Sequential Mode)",
-        formatter_class=argparse.RawTextHelpFormatter,
-        epilog="""
-Examples:
-  sudo ./ikess.py 10.0.0.1
-  sudo ./ikess.py 10.0.0.0/24 --fullalgs --fingerprint
-  sudo ./ikess.py 10.0.0.1 --enc DES,3DES --onlycustom
-  sudo ./ikess.py 10.0.0.1 --enc AES128,3DES,1,7/256 --hash SHA1,SHA256,1 --auth PSK,RSA --group G2,G14,16
-"""
+        description=(
+            "ikess v1.1 - IKE Security Scanner (Sequential Mode)\n\n"
+            "Scans one or more targets (IP or CIDR) sequentially with ike-scan, detects IKEv1/IKEv2,\n"
+            "tests curated or expanded transform sets, optionally fingerprints backoff behavior, and\n"
+            "produces XML, JSON, and HTML reports with findings and proof sections.\n\n"
+            "Requirements:\n"
+            "  - The external binary 'ike-scan' must be installed and in PATH.\n"
+            "  - Root privileges are typically required to send raw IKE packets (use sudo).\n\n"
+            "How targets are interpreted:\n"
+            "  - Single IP: 192.0.2.10\n"
+            "  - CIDR: 192.0.2.0/24 (all usable hosts are scanned)\n\n"
+            "Scan flow per host:\n"
+            "  1) IKEv1 discovery\n"
+            "  2) IKEv2 discovery\n"
+            "  3) Aggressive Mode tests (only if IKEv1 observed)\n"
+            "  4) Main Mode transform tests (curated by default or expanded when requested)\n"
+            "  5) Optional backoff fingerprinting (--fingerprint)\n\n"
+            "Transform key format:\n"
+            "  ENC[/bits],HASH,AUTH,GROUP\n"
+            "  Example: '7/256,5,1,14' means AES-256, SHA256, PSK, MODP-2048.\n"
+        ),
+        formatter_class=SmartFormatter,
+        epilog=(
+            "Aliases you can use for --enc, --hash, --auth, --group:\n"
+            "  ENC:  DES=1, 3DES=5, AES=7/128, AES128=7/128, AES192=7/192, AES256=7/256\n"
+            "  HASH: MD5=1, SHA1=2, SHA-1=2, SHA 1=2, SHA256=5, SHA-256=5, SHA 256=5\n"
+            "  AUTH: PSK=1, RSA=3, RSA_SIG=3, RSA-SIG=3, RSA SIG=3, HYBRID=64221, HYBRID_RSA=64221\n"
+            "  DH:   G1=1,  G2=2,  G5=5,  G14=14, G15=15, G16=16\n"
+            "        MODP768=1, MODP1024=2, MODP1536=5, MODP2048=14, MODP3072=15, MODP4096=16\n\n"
+            "Notes:\n"
+            "  - By default ikess uses a curated set of common, modern, and legacy transforms.\n"
+            "  - --fullalgs switches to an expanded transform set that is larger and slower but thorough.\n"
+            "  - You can add custom lists via --enc/--hash/--auth/--group; these are merged with the curated\n"
+            "    or expanded set unless you also pass --onlycustom to scan only your provided items.\n"
+            "  - For Aggressive Mode, only PSK is tried unless you explicitly include other --auth values.\n\n"
+            "Exit codes:\n"
+            "  0 success, 1 dependency or runtime error, 124 external timeout.\n\n"
+            "Examples:\n"
+            "  sudo ./ikess.py 10.0.0.1\n"
+            "  sudo ./ikess.py 10.0.0.0/24 --fullalgs --fingerprint\n"
+            "  sudo ./ikess.py 10.0.0.1 --enc DES,3DES --onlycustom\n"
+            "  sudo ./ikess.py 10.0.0.1 --enc AES128,3DES,1,7/256 --hash SHA1,SHA256,1 --auth PSK,RSA --group G2,G14,16\n"
+            "  sudo ./ikess.py 203.0.113.5 --enc AES256 --hash SHA256 --auth PSK --group MODP2048 --onlycustom\n"
+        ),
     )
-    parser.add_argument("targets", nargs="+", help="IP(s) or CIDR ranges")
-    parser.add_argument("--fullalgs", action="store_true", help="Use expanded transform sets")
-    parser.add_argument("--fingerprint", action="store_true", help="Enable backoff fingerprinting")
-    parser.add_argument("--enc", help="Comma-separated encryption list")
-    parser.add_argument("--hash", help="Comma-separated hash list")
-    parser.add_argument("--auth", help="Comma-separated auth list")
-    parser.add_argument("--group", "--dh", dest="group", help="Comma-separated DH groups")
-    parser.add_argument("--onlycustom", action="store_true", help="Skip curated transforms")
+
+    parser.add_argument(
+        "targets",
+        nargs="+",
+        help=(
+            "One or more IPv4 addresses or CIDR ranges to scan. Examples: 192.0.2.10 192.0.2.0/28\n"
+            "All usable hosts in a CIDR are enumerated."
+        ),
+    )
+    parser.add_argument(
+        "--fullalgs",
+        action="store_true",
+        help=(
+            "Use the expanded transform sets. Increases coverage and scan time. The expanded sets include\n"
+            "additional DES/3DES, AES bit lengths, multiple DH groups, and RSA/HYBRID combinations."
+        ),
+    )
+    parser.add_argument(
+        "--fingerprint",
+        action="store_true",
+        help=(
+            "Enable backoff fingerprinting (ike-scan --showbackoff). If no fingerprint is obtained from a\n"
+            "generic probe, ikess retries using the first accepted transform to improve accuracy."
+        ),
+    )
+    parser.add_argument(
+        "--enc",
+        help=(
+            "Comma separated encryption list to try or restrict. Accepts numeric codes or aliases.\n"
+            "Examples: --enc AES256,3DES  or  --enc 7/256,5"
+        ),
+    )
+    parser.add_argument(
+        "--hash",
+        help=(
+            "Comma separated hash list. Accepts numeric codes or aliases.\n"
+            "Examples: --hash SHA1,SHA256  or  --hash 2,5"
+        ),
+    )
+    parser.add_argument(
+        "--auth",
+        help=(
+            "Comma separated IKE authentication methods. Accepts numeric codes or aliases.\n"
+            "Examples: --auth PSK,RSA  or  --auth 1,3  or  --auth HYBRID"
+        ),
+    )
+    parser.add_argument(
+        "--group", "--dh",
+        dest="group",
+        help=(
+            "Comma separated DH groups. Accepts numeric codes or aliases. '--dh' is an alias.\n"
+            "Examples: --group G14,G16  or  --dh MODP2048,MODP4096  or  --group 14,16"
+        ),
+    )
+    parser.add_argument(
+        "--onlycustom",
+        action="store_true",
+        help=(
+            "Scan only the transforms built from your custom --enc/--hash/--auth/--group lists. Without this\n"
+            "flag, custom items are merged into the curated or expanded set."
+        ),
+    )
 
     args = parser.parse_args()
 
