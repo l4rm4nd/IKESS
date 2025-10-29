@@ -92,3 +92,9 @@ Examples:
   sudo ./ikess.py 203.0.113.5 --enc AES256 --hash SHA256 --auth PSK --group MODP2048 --onlycustom
 
 ```
+
+You can also run via Docker:
+
+```bash
+docker run --rm -v ./results:/app/results ghcr.io/l4rm4nd/ikess:latest <IP>
+```
