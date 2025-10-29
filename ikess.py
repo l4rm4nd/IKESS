@@ -277,6 +277,30 @@ def _build_transform_space(encs: List[str], hashes: List[str], auths: List[str],
     return [f"{e},{h},{a},{g}" for e, h, a, g in product(encs, hashes, auths, groups)]
 
 # ----------------------------- Helpers ----------------------------------
+
+def _implementation_sources(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """
+    Return both implementation hints:
+    - 'backoff': from --showbackoff (preferred if present & not N/A/unknown)
+    - 'vid': first meaningful VID description (fallback)
+    Also include a 'primary' key with the chosen display value.
+    """
+    backoff = (data.get("showbackoff") or "").strip()
+    if backoff.lower() in {"", "n/a", "unknown"}:
+        backoff = None
+
+    vids = data.get("vid") or []
+    vid_choice = None
+    for v in vids:
+        if not re.search(r"(draft|fragment|dead peer|xauth|rfc\s*3947|heartbeat)", v, re.I):
+            vid_choice = v
+            break
+    if not vid_choice and vids:
+        vid_choice = vids[0]
+
+    primary = backoff or vid_choice or "N/A"
+    return {"backoff": backoff, "vid": vid_choice, "primary": primary}
+
 def run_command(cmd: List[str], timeout: int = 30) -> Tuple[str, str, int]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -533,6 +557,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     results = {"services": {}, "summary": {}}
 
     for ip, data in vpns.items():
+        impls = _implementation_sources(data)
         results["services"][ip] = {
             "flaws": [],
             "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "good": 0},
@@ -541,7 +566,9 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             "proof": {},  # <-- NEW: Proof section
             "meta": {
                 "versions": [v for v, k in (("IKEv1", data.get("v1")), ("IKEv2", data.get("v2"))) if k],
-                "implementation": data.get("showbackoff") or "N/A",
+                "implementation": impls["primary"],
+                "implementation_backoff": impls["backoff"],
+                "implementation_vid": impls["vid"],
             },
         }
 
@@ -595,9 +622,9 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 
         for vid in data.get("vid", []):
             add_finding(f"{FLAWS['FING_VID']}: {vid}", "low")
-        impl = data.get("showbackoff") or "N/A"
-        if impl and impl != "N/A":
-            add_finding(f"{FLAWS['FING_BACKOFF']}: {impl}", "low")
+        
+        if impls["backoff"]:
+            add_finding(f"{FLAWS['FING_BACKOFF']}: {impls['backoff']}", "low")
 
         results["services"][ip]["accepted_transforms"]["main"] = list(dict.fromkeys(data.get("transforms", [])))
         results["services"][ip]["accepted_transforms"]["aggressive"] = list(dict.fromkeys(data.get("aggressive", [])))
@@ -647,7 +674,16 @@ def generate_html_report(results: Dict, filename: str):
 
     for idx, (ip, svc) in enumerate(results["services"].items()):
         versions = ", ".join(svc["meta"]["versions"]) if svc["meta"]["versions"] else "None"
-        impl = svc["meta"]["implementation"] or "N/A"
+        impl_backoff = svc["meta"].get("implementation_backoff")
+        impl_vid = svc["meta"].get("implementation_vid")
+
+        impl_parts = []
+        if impl_backoff:
+            impl_parts.append(f"{impl_backoff} <span class='badge text-bg-secondary ms-1'>backoff</span>")
+        if impl_vid:
+            impl_parts.append(f"{impl_vid} <span class='badge text-bg-secondary ms-1'>VID</span>")
+
+        impl_display = " / ".join(impl_parts) if impl_parts else "N/A"
 
         main_rows = "".join(
             f"<li><code class='text-wrap'>{sa}</code></li>"
@@ -692,7 +728,7 @@ def generate_html_report(results: Dict, filename: str):
                   aria-controls="collapse-{ip.replace('.', '-')}-{idx}">
             <div class="d-flex w-100 justify-content-between align-items-center">
               <span class="me-3 fw-semibold">{ip}</span>
-              <span class="text-muted">Supported: {versions} &nbsp;•&nbsp; Implementation (backoff): {impl}</span>
+              <span class="text-muted">Supported: {versions} &nbsp;•&nbsp; Implementation: {impl_display}</span>
             </div>
           </button>
         </h2>
@@ -919,6 +955,8 @@ def generate_xml_report(results: Dict[str, Any], filename: str) -> None:
         meta = ET.SubElement(s, "meta")
         ET.SubElement(meta, "versions").text = ", ".join(svc["meta"].get("versions", []))
         ET.SubElement(meta, "implementation").text = str(svc["meta"].get("implementation") or "N/A")
+        ET.SubElement(meta, "implementation_backoff").text = str(svc["meta"].get("implementation_backoff") or "")
+        ET.SubElement(meta, "implementation_vid").text = str(svc["meta"].get("implementation_vid") or "")
 
         # accepted transforms
         acc = ET.SubElement(s, "accepted_transforms")
@@ -963,6 +1001,18 @@ def print_console_report(results: Dict[str, Any]) -> None:
         counts = svc["severity_counts"]
         logger.info(f"Host: {ip}")
         logger.info(f"  Supported versions: {versions}")
+
+        # NEW: show both implementation hints if available
+        impls = []
+        backoff = svc["meta"].get("implementation_backoff")
+        vid = svc["meta"].get("implementation_vid")
+        if backoff:
+            impls.append(f"{backoff} (backoff)")
+        if vid:
+            impls.append(f"{vid} (VID)")
+        impl_line = " / ".join(impls) if impls else "N/A"
+        logger.info(f"  Implementation: {impl_line}")
+
         logger.info(f"  Findings: {sum(counts.values())}  ([CRITICAL] {counts['critical']}, [HIGH] {counts['high']}, [MEDIUM] {counts['medium']}, [LOW] {counts['low']}, [INFO] {counts['info']})")
         for sev in ["critical", "high", "medium", "low", "info", "good"]:
             items = [f for f in svc["flaws"] if f["severity"] == sev]
