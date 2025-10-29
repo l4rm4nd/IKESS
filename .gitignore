@@ -1,0 +1,3 @@
+# ignore all generated reports
+results/*
+!results/.gitkeep
