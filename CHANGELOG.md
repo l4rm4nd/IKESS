@@ -1,3 +1,10 @@
+## [0.2.2](https://github.com/l4rm4nd/IKESS/compare/v0.2.1...v0.2.2) (2025-10-29)
+
+
+### Bug Fixes
+
+* proper filenames ([001315f](https://github.com/l4rm4nd/IKESS/commit/001315ff3774dcb713b5d9ab6f4e5d40a518d281))
+
 ## [0.2.1](https://github.com/l4rm4nd/IKESS/compare/v0.2.0...v0.2.1) (2025-10-29)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * trigger ci ([a300012](https://github.com/l4rm4nd/IKESS/commit/a3000128c43cbd935a89c638b4db216eef98b9d5))
-
-## [0.1.2](https://github.com/l4rm4nd/IKESS/compare/v0.1.1...v0.1.2) (2025-10-29)
-
-
-### Bug Fixes
-
-* trigger ci ([2853047](https://github.com/l4rm4nd/IKESS/commit/2853047e95a127e5e421df126ec512a59939f035))
 
