@@ -1,3 +1,10 @@
+## [0.1.3](https://github.com/l4rm4nd/IKESS/compare/v0.1.2...v0.1.3) (2025-10-29)
+
+
+### Bug Fixes
+
+* trigger ci ([a300012](https://github.com/l4rm4nd/IKESS/commit/a3000128c43cbd935a89c638b4db216eef98b9d5))
+
 ## [0.1.2](https://github.com/l4rm4nd/IKESS/compare/v0.1.1...v0.1.2) (2025-10-29)
 
 
