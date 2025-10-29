@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-ikess v1.1 - IKE Security Scanner (Sequential Mode)
+ikess - IKE Security Scanner (Sequential Mode)
 Author: LRVT[](https://github.com/l4rm4nd)
-
-SAFE FOR IKE: No threading — avoids UDP 500 collision and backoff corruption.
 """
 
 import argparse
@@ -1133,7 +1131,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="ikess",
         description=(
-            "ikess v1.1 - IKE Security Scanner (Sequential Mode)\n\n"
+            "ikess - IKE Security Scanner (Sequential Mode)\n\n"
             "Scans one or more targets (IP or CIDR) sequentially with ike-scan, detects IKEv1/IKEv2,\n"
             "tests curated or expanded transform sets, optionally fingerprints backoff behavior, and\n"
             "produces XML, JSON, and HTML reports with findings and proof sections.\n\n"
