@@ -53,7 +53,7 @@ jobs:
       - name: Run Bandit
         id: bandit
         run: |
-           bandit -r linkedindumper.py --severity-level medium -f html -o bandit_report.html
+           bandit -r ikess.py --severity-level medium -f html -o bandit_report.html
 
       - name: Upload Bandit report
         if: failure()
@@ -95,7 +95,7 @@ jobs:
         id: meta
         with:
           images: |
-            docker.io/${{ secrets.DOCKER_HUB_USERNAME }}/${{ env.REPO_NAME }}
+            ghcr.io/${{ secrets.DOCKER_HUB_USERNAME }}/${{ env.REPO_NAME }}
           tags: |
             latest
             ${{ needs.changelog.outputs.version }}
