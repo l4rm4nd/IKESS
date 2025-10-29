@@ -14,6 +14,9 @@ A Python3 Script for Auditing IKE VPN Servers
 
 ## Usage
 
+> [!CAUTION]
+> This script requires the binary `ike-scan` and must be run as root
+
 ```bash
 usage: ikess [-h] [--fullalgs] [--fingerprint] [--enc ENC] [--hash HASH] [--auth AUTH] [--group GROUP] [--onlycustom] targets [targets ...]
 
