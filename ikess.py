@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-ikess v1.0 - IKE Security Scanner
+ikess v1.1 - IKE Security Scanner
 Author: LRVT (https://github.com/l4rm4nd)
+
+Changes in v1.1:
+- argparse: --fullalgs to broaden transform search sets
+- argparse: --fingerprint (off by default) to run --showbackoff and retry with a known transform
+- store accepted transform keys for main/aggressive to support transform-guided fingerprint retry
 """
 
 import argparse
@@ -24,11 +29,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ikess")
 
+# --------------------------- Feature flags (set by argparse) ------------
+
+FULLALGS: bool = False
+FINGERPRINT: bool = False
+
 # --------------------------- Vulnerability text -------------------------
 
 FLAWS = {
-    "IKEV1": "Weak IKE version 1 supported (deprecated in favor of IKEv2)",
-    "DISC": "The IKE service is discoverable, which should be restricted to authorized parties",
+    "IKEV1": "Weak IKE version 1 supported - deprecated in favor of IKEv2",
+    "DISC": "The IKE service is discoverable - switch to IKEv2 to prevent",
     "ENC_DES": "DES encryption detected - insecure and should be replaced with AES",
     "ENC_3DES": "3DES encryption detected - deprecated and should be replaced with AES",
     "HASH_MD5": "MD5 hash algorithm detected - insecure due to collision vulnerabilities",
@@ -36,53 +46,83 @@ FLAWS = {
     "DHG_1": "DH Group 1 (MODP-768) detected - weak DH group, should use Group 14+ (2048-bit+)",
     "DHG_2": "DH Group 2 (MODP-1024) detected - weak DH group, should use Group 14+ (2048-bit+)",
     "AUTH_PSK": "Pre-shared key authentication - consider certificate-based authentication",
-    "AGG_MODE": "Aggressive Mode supported - reveals identity and is vulnerable to offline attacks",
-    "FING_VID": "Fingerprinting possible via VID payload",
-    "FING_BACKOFF": "Fingerprinting possible via backoff pattern",
+    "AGG_MODE": "Aggressive Mode supported - may reveal PSK hash for offline attacks",
+    "FING_VID": "Fingerprinting possible via VID payload - informational leak",
+    "FING_BACKOFF": "Fingerprinting possible via backoff pattern - informational leak",
 }
 
 # ------------------------ Transform candidate sets ----------------------
-# Keep finite lists but broaden coverage similar to the other script’s results.
 # Format for IKEv1 --trans inputs: "<enc>[/<bits>],<hash>,<auth>,<dhgroup>"
-# Notes:
-#   Enc: 1=DES, 5=3DES, 7/128 or 7/256 for AES-128/AES-256
-#   Hash: 1=MD5, 2=SHA1, 5=SHA256 (ike-scan uses numeric mapping)
-#   Auth: 1=PSK, 3=RSA_Sig, 64221=Hybrid_RSA, 65001=XAUTH (as method is in 3rd pos)
-#   Group: 2=modp1024, 14=modp2048
+# Enc: 1=DES, 5=3DES, 7/128 or 7/256 for AES-128/AES-256
+# Hash: 1=MD5, 2=SHA1, 5=SHA256 (ike-scan numeric mapping)
+# Auth: 1=PSK, 3=RSA_Sig, 64221=Hybrid_RSA
+# Group: 2=modp1024, 5=modp1536, 14=modp2048, 15=modp3072, 16=modp4096
 
 MAIN_MODE_TRANSFORMS = [
-    # Legacy 3DES combos
-    "5,1,1,2",            # 3DES-MD5-PSK-G2
-    "5,1,3,2",            # 3DES-MD5-RSA_Sig-G2
-    "5,1,64221,2",        # 3DES-MD5-Hybrid_RSA-G2
-    "5,2,1,2",            # 3DES-SHA1-PSK-G2
-    "5,2,3,2",            # 3DES-SHA1-RSA_Sig-G2
-    "5,2,64221,2",        # 3DES-SHA1-Hybrid_RSA-G2
-    "5,1,1,14",           # 3DES-MD5-PSK-G14
-    "5,1,3,14",           # 3DES-MD5-RSA_Sig-G14
-    "5,1,64221,14",       # 3DES-MD5-Hybrid_RSA-G14
-    "5,2,1,14",           # 3DES-SHA1-PSK-G14
-    "5,2,3,14",           # 3DES-SHA1-RSA_Sig-G14
-    "5,2,64221,14",       # 3DES-SHA1-Hybrid_RSA-G14
+    # Legacy 3DES combos (short set)
+    "5,1,1,2",             # 3DES-MD5-PSK-G2
+    "5,1,3,2",             # 3DES-MD5-RSA_Sig-G2
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "5,2,3,2",             # 3DES-SHA1-RSA_Sig-G2
+    "5,2,64221,2",         # 3DES-SHA1-Hybrid_RSA-G2
+    "5,2,1,14",            # 3DES-SHA1-PSK-G14
 
-    # AES-128 / AES-256 common combos
-    "7/128,2,1,14",       # AES128-SHA1-PSK-G14
-    "7/128,5,1,14",       # AES128-SHA256-PSK-G14
-    "7/128,2,3,14",       # AES128-SHA1-RSA_Sig-G14
-    "7/128,5,3,14",       # AES128-SHA256-RSA_Sig-G14
-    "7/256,2,1,14",       # AES256-SHA1-PSK-G14
-    "7/256,5,1,14",       # AES256-SHA256-PSK-G14
-    "7/256,2,3,14",       # AES256-SHA1-RSA_Sig-G14
-    "7/256,5,3,14",       # AES256-SHA256-RSA_Sig-G14
+    # Common AES
+    "7/128,2,1,14",        # AES128-SHA1-PSK-G14
+    "7/128,5,1,14",        # AES128-SHA256-PSK-G14
+    "7/128,2,3,14",        # AES128-SHA1-RSA_Sig-G14
+    "7/128,5,3,14",        # AES128-SHA256-RSA_Sig-G14
+    "7/256,2,1,14",        # AES256-SHA1-PSK-G14
+    "7/256,5,1,14",        # AES256-SHA256-PSK-G14
+    "7/256,2,3,14",        # AES256-SHA1-RSA_Sig-G14
+    "7/256,5,3,14",        # AES256-SHA256-RSA_Sig-G14
 ]
+
+# Expanded set used when --fullalgs is provided
+MAIN_MODE_TRANSFORMS_FULL = list(dict.fromkeys(MAIN_MODE_TRANSFORMS + [
+    # More 3DES
+    "5,1,64221,2",         # 3DES-MD5-Hybrid_RSA-G2
+    "5,1,1,14",            # 3DES-MD5-PSK-G14
+    "5,1,3,14",            # 3DES-MD5-RSA_Sig-G14
+    "5,1,64221,14",        # 3DES-MD5-Hybrid_RSA-G14
+    "5,2,3,14",            # 3DES-SHA1-RSA_Sig-G14
+    "5,2,64221,14",        # 3DES-SHA1-Hybrid_RSA-G14
+    "5,2,1,5",             # 3DES-SHA1-PSK-G5 (1536)
+
+    # AES + more DH groups
+    "7/128,2,1,2",
+    "7/128,2,1,5",
+    "7/128,2,1,15",
+    "7/128,2,1,16",
+    "7/256,2,1,2",
+    "7/256,2,1,5",
+    "7/256,2,1,15",
+    "7/256,2,1,16",
+
+    # RSA_Sig/Hybrid variants with MD5 (seen on legacy)
+    "7/128,1,3,14",
+    "7/256,1,3,14",
+    "7/128,1,64221,14",
+    "7/256,1,64221,14",
+]))
 
 AGGRESSIVE_MODE_TRANSFORMS = [
-    # Stick to sane subset for Aggressive checks
-    "5,2,1,2",            # 3DES-SHA1-PSK-G2
-    "5,2,1,14",           # 3DES-SHA1-PSK-G14
-    "7/128,2,1,14",       # AES128-SHA1-PSK-G14
-    "7/256,5,1,14",       # AES256-SHA256-PSK-G14
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "5,2,1,14",            # 3DES-SHA1-PSK-G14
+    "7/128,2,1,14",        # AES128-SHA1-PSK-G14
+    "7/256,5,1,14",        # AES256-SHA256-PSK-G14
 ]
+
+AGGRESSIVE_MODE_TRANSFORMS_FULL = list(dict.fromkeys(AGGRESSIVE_MODE_TRANSFORMS + [
+    "7/128,2,1,2",
+    "7/256,2,1,2",
+    "7/128,2,1,5",
+    "7/256,2,1,5",
+    "7/128,5,1,14",
+    "7/256,5,1,16",
+    "5,1,1,2",
+    "5,1,1,14",
+]))
 
 # ----------------------------- Helpers ----------------------------------
 
@@ -143,18 +183,15 @@ def _parse_vids(handshake: str) -> List[str]:
     vids = []
     for m in re.finditer(r"VID=([a-fA-F0-9]+)\s+\(([^)]+)\)", handshake):
         desc = m.group(2).strip()
-        # Skip generic extensions
         if any(s in desc for s in ["draft-ietf", "IKE Fragmentation", "Dead Peer Detection", "XAUTH", "RFC 3947", "heartbeat"]):
             continue
         vids.append(desc)
     return vids
 
 def _parse_sa_block(handshake: str) -> List[str]:
-    # Grab everything inside SA=(...)
     return re.findall(r"SA=\(([^)]+)\)", handshake)
 
 def _collect_weaknesses_from_text(txt: str) -> List[str]:
-    # Independent flags so DES and 3DES can both be present
     wk = []
     if "Enc=DES" in txt:
         wk.append("DES")
@@ -189,7 +226,6 @@ def check_ikev1(vpns: Dict, ip: str):
     if positive:
         vpns[ip]["v1"] = True
         vpns[ip]["handshake"] = out
-        # collect VIDs
         vids = _parse_vids(_strip_banner(out))
         for v in vids:
             vpns[ip].setdefault("vid", [])
@@ -199,7 +235,6 @@ def check_ikev1(vpns: Dict, ip: str):
 def check_ikev2(vpns: Dict, ip: str):
     logger.info(f"Checking IKEv2 support for {ip}")
     out, _, _ = run_command(["ike-scan", "--ikev2", ip], timeout=10)
-    #logger.info(f"DEBUG: IKEv2 scan output for {ip}: {repr(out[:200])}")
     if not out:
         return
     body = _strip_banner(out)
@@ -215,17 +250,8 @@ def fingerprint_backoff(
     ike_scan_bin: str = "ike-scan",
     timeout: int = 300,
 ) -> None:
-    """
-    Run ike-scan --showbackoff against `ip` (optionally with a known transform),
-    parse the 'Implementation guess:' line and store a clean value in vpns[ip]['showbackoff'].
-    Also capture the raw 'Backoff pattern:' timings if present (vpns[ip]['backoff_pattern']).
-
-    On failure or 'unknown', store 'N/A' so we don't re-try later.
-    """
     logger.info(f"Fingerprinting {ip} via backoff analysis"
                 f"{' with transform ' + transform if transform else ''}")
-
-    # Build command (strip spaces from transform like the legacy script does)
     cmd = [ike_scan_bin, "--showbackoff"]
     if transform:
         cmd += ["--trans", transform.replace(" ", "")]
@@ -236,7 +262,6 @@ def fingerprint_backoff(
     guess = None
     pattern = None
 
-    # Parse only informative lines; ignore ike-scan banners.
     for ln in out.splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("Starting ike-scan") or ln.startswith("Ending ike-scan"):
@@ -246,23 +271,14 @@ def fingerprint_backoff(
             if cand and cand.lower() != "unknown":
                 guess = cand
         elif ln.startswith("Backoff pattern:"):
-            # E.g. "Backoff pattern: 0, 2, 2, 2"
             raw = ln.split("Backoff pattern:", 1)[1].strip()
-            # keep a normalized version for reporting
             pattern = [p.strip() for p in raw.split(",") if p.strip()]
 
-    # Record results
     vpns.setdefault(ip, {})
-    if guess:
-        vpns[ip]["showbackoff"] = guess
-    else:
-        # Align with your desired UX: prefer "N/A" (clean) over noisy banners
-        vpns[ip]["showbackoff"] = "N/A"
-
+    vpns[ip]["showbackoff"] = guess if guess else "N/A"
     if pattern:
         vpns[ip]["backoff_pattern"] = pattern
 
-    # Log useful summary without dumping banners
     if guess and guess != "N/A":
         logger.info(f"Backoff fingerprint for {ip}: {guess}"
                     f"{' | pattern: ' + ', '.join(pattern) if pattern else ''}")
@@ -278,18 +294,26 @@ def _try_transform(ip: str, transform: str, aggressive: bool = False) -> str:
     out, _, _ = run_command(base, timeout=5)
     return _strip_banner(out)
 
+def _transform_sets() -> Tuple[List[str], List[str]]:
+    """Return the (main, aggressive) candidate lists based on FULLALGS."""
+    if FULLALGS:
+        return MAIN_MODE_TRANSFORMS_FULL, AGGRESSIVE_MODE_TRANSFORMS_FULL
+    return MAIN_MODE_TRANSFORMS, AGGRESSIVE_MODE_TRANSFORMS
+
 def test_transforms(vpns: Dict, ip: str):
     logger.info(f"Testing encryption algorithms for {ip}")
-    accepted = []
-    for i, t in enumerate(MAIN_MODE_TRANSFORMS, 1):
-        progress = (i / len(MAIN_MODE_TRANSFORMS)) * 100
+    transforms_main, _ = _transform_sets()
+    accepted_sa: List[str] = []
+    accepted_keys: List[str] = []
+
+    for i, t in enumerate(transforms_main, 1):
+        progress = (i / len(transforms_main)) * 100
         print(f"\r[{'█' * int(progress/100*30):30}] {progress:.1f}% - Main Mode Transform: {t}", end="", flush=True)
         out = _try_transform(ip, t, aggressive=False)
         if "Handshake returned" in out:
-            # collect SA block
             for sa in _parse_sa_block(out):
-                accepted.append(sa)
-            # also collect VIDs if shown
+                accepted_sa.append(sa)
+                accepted_keys.append(t)
             vids = _parse_vids(out)
             if vids:
                 vpns[ip].setdefault("vid", [])
@@ -297,22 +321,28 @@ def test_transforms(vpns: Dict, ip: str):
                     if v not in vpns[ip]["vid"]:
                         vpns[ip]["vid"].append(v)
     print()
-    vpns[ip]["transforms"] = accepted
+    vpns[ip]["transforms"] = list(dict.fromkeys(accepted_sa))
+    vpns[ip]["accepted_transform_keys_main"] = list(dict.fromkeys(accepted_keys))
 
 def test_aggressive_mode(vpns: Dict, ip: str):
-    # Only meaningful for IKEv1
     if not vpns[ip].get("v1"):
         vpns[ip]["aggressive"] = []
+        vpns[ip]["accepted_transform_keys_aggr"] = []
         return
+
     logger.info(f"Testing Aggressive Mode for {ip}")
-    accepted = []
-    for i, t in enumerate(AGGRESSIVE_MODE_TRANSFORMS, 1):
-        progress = (i / len(AGGRESSIVE_MODE_TRANSFORMS)) * 100
+    _, transforms_aggr = _transform_sets()
+    accepted_sa: List[str] = []
+    accepted_keys: List[str] = []
+
+    for i, t in enumerate(transforms_aggr, 1):
+        progress = (i / len(transforms_aggr)) * 100
         print(f"\r[{'█' * int(progress/100*30):30}] {progress:.1f}% - Aggressive Mode Transform: {t}", end="", flush=True)
         out = _try_transform(ip, t, aggressive=True)
         if "Handshake returned" in out:
             for sa in _parse_sa_block(out):
-                accepted.append(sa)
+                accepted_sa.append(sa)
+                accepted_keys.append(t)
             vids = _parse_vids(out)
             if vids:
                 vpns[ip].setdefault("vid", [])
@@ -320,7 +350,8 @@ def test_aggressive_mode(vpns: Dict, ip: str):
                     if v not in vpns[ip]["vid"]:
                         vpns[ip]["vid"].append(v)
     print()
-    vpns[ip]["aggressive"] = accepted
+    vpns[ip]["aggressive"] = list(dict.fromkeys(accepted_sa))
+    vpns[ip]["accepted_transform_keys_aggr"] = list(dict.fromkeys(accepted_keys))
 
 def test_ikev2_features(vpns: Dict, ip: str):
     if not vpns[ip].get("v2"):
@@ -363,7 +394,7 @@ def analyze_security_flaws(vpns: Dict) -> Dict:
         if data.get("aggressive"):
             add_flaw(FLAWS["AGG_MODE"], "critical")
 
-        # Aggregate text for weaknesses (include both IKEv1 and IKEv2 captures)
+        # Aggregate text for weaknesses
         agg_text_parts = []
         if "handshake" in data:
             agg_text_parts.append(_strip_banner(data["handshake"]))
@@ -375,7 +406,7 @@ def analyze_security_flaws(vpns: Dict) -> Dict:
             agg_text_parts.append(f"SA=({sa})")
         agg_text = " ".join(agg_text_parts)
 
-        # Weak crypto markings from aggregate text
+        # Weak crypto
         if "Enc=DES" in agg_text and "Enc=3DES" not in agg_text:
             add_flaw(FLAWS["ENC_DES"], "high", agg_text)
         if "Enc=3DES" in agg_text:
@@ -395,23 +426,20 @@ def analyze_security_flaws(vpns: Dict) -> Dict:
         for vid in data.get("vid", []):
             add_flaw(f"{FLAWS['FING_VID']}: {vid}", "low", "")
 
-        # Backoff guess
+        # Backoff guess (only if we actually set one)
         impl = data.get("showbackoff") or "N/A"
         if impl and impl != "N/A":
             add_flaw(f"{FLAWS['FING_BACKOFF']}: {impl}", "low", "")
-        else:
-            # Do not show raw ike-scan banners anymore; keep it clean
-            pass
 
-        # Accepted transforms
+        # Accepted transforms (strings for report)
         results["services"][ip]["accepted_transforms"]["main"] = list(dict.fromkeys(data.get("transforms", [])))
         results["services"][ip]["accepted_transforms"]["aggressive"] = list(dict.fromkeys(data.get("aggressive", [])))
 
-        # Weak algorithms bullets
+        # Weak alg bullets
         results["services"][ip]["weak_algorithms"] = _collect_weaknesses_from_text(agg_text)
 
     # Summary
-    summary = {"total_hosts": len(vpns), "critical": 0, "high": 0, "medium": 0, "low": 0, "info":0}
+    summary = {"total_hosts": len(vpns), "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for svc in results["services"].values():
         for sev, c in svc["severity_counts"].items():
             summary[sev] += c
@@ -447,7 +475,6 @@ def _sev_pill(sev: str, count: int) -> str:
         return f'<span class="badge rounded-pill text-bg-secondary text-dark">INFO {count}</span>'
 
 def generate_html_report(results: Dict, filename: str):
-    # Build HTML with Bootstrap, clear light theme by default and good contrast
     total = results["summary"]["total_hosts"]
     crit = results["summary"]["critical"]
     high = results["summary"]["high"]
@@ -461,7 +488,6 @@ def generate_html_report(results: Dict, filename: str):
         versions = ", ".join(svc["meta"]["versions"]) if svc["meta"]["versions"] else "None"
         impl = svc["meta"]["implementation"] or "N/A"
 
-        # Accepted transforms tables
         main_rows = "".join(
             f"<li><code class='text-wrap'>{sa}</code></li>"
             for sa in svc["accepted_transforms"]["main"]
@@ -474,7 +500,6 @@ def generate_html_report(results: Dict, filename: str):
         weak_list = "".join(f"<li>{w}</li>" for w in svc["weak_algorithms"]) or "<li><span class='text-muted'>None detected</span></li>"
 
         findings_list = []
-        # Group findings by severity order
         order = ["critical", "high", "medium", "low", "info"]
         for sev in order:
             for f in svc["flaws"]:
@@ -485,7 +510,6 @@ def generate_html_report(results: Dict, filename: str):
                     )
         findings_html = "".join(findings_list) or "<li class='text-muted'>No findings.</li>"
 
-        # JSON payload for this host
         host_json_obj = {
             "flaws": svc["flaws"],
             "severity_counts": svc["severity_counts"],
@@ -584,25 +608,19 @@ def generate_html_report(results: Dict, filename: str):
   code.text-wrap {{ white-space: normal; word-break: break-word; }}
   .accordion-button:not(.collapsed) {{ background:#f1f5f9; }}
 @media (prefers-color-scheme: dark) {{
-  /* Base */
   :root {{
-    --surface-0: #0f172a;   /* page */
-    --surface-1: #111827;   /* cards/expanded accordions */
-    --surface-2: #0b1220;   /* table header / code bg */
-    --border-1:  #334155;   /* borders/dividers */
-    --text-1:    #f1f5f9;   /* primary text */
-    --text-2:    #cbd5e1;   /* secondary text */
+    --surface-0: #0f172a;
+    --surface-1: #111827;
+    --surface-2: #0b1220;
+    --border-1:  #334155;
+    --text-1:    #f1f5f9;
+    --text-2:    #cbd5e1;
   }}
-
   body {{ background: var(--surface-0); color: var(--text-1); }}
   .container-fluid {{ color: inherit; }}
-
-  /* Typography tweaks for contrast */
   h1, h2, h3, h4, h5, h6 {{ color: var(--text-1); }}
   .text-muted {{ color: var(--text-2) !important; }}
   ul, li {{ color: var(--text-1); }}
-
-  /* Cards / accordion */
   .card {{
     background: var(--surface-1);
     border-color: var(--border-1);
@@ -621,8 +639,6 @@ def generate_html_report(results: Dict, filename: str):
   .accordion-button:focus {{
     box-shadow: 0 0 0 .25rem rgba(99,102,241,.35);
   }}
-
-  /* Tables */
   .table {{
     color: var(--text-1);
     --bs-table-bg: transparent;
@@ -635,23 +651,16 @@ def generate_html_report(results: Dict, filename: str):
     border-bottom-color: var(--border-1);
   }}
   .table tbody td {{ border-color: var(--border-1); color: white; }}
-
-  /* Badges (enforce readable text) */
   .badge.text-bg-secondary,
   .badge.text-bg-primary,
   .badge.text-bg-danger {{ color: #ffffff !important; }}
   .badge.text-bg-warning,
   .badge.text-bg-info {{ color: #0f172a !important; }}
-
-  /* Code / JSON blocks */
   .json-pre {{
     background: var(--surface-2);
     border: 1px solid var(--border-1);
   }}
   pre, code {{ color: #f8fafc; }}
-  code.text-wrap {{ white-space: normal; word-break: break-word; }}
-
-  /* Buttons */
   .btn-outline-secondary {{
     color: var(--text-1);
     border-color: #475569;
@@ -661,12 +670,9 @@ def generate_html_report(results: Dict, filename: str):
     border-color: #64748b;
     color: #ffffff;
   }}
-
-  /* Links */
   a {{ color: #93c5fd; }}
   a:hover, a:focus {{ color: #bfdbfe; }}
 }}
-
 </style>
 </head>
 <body>
@@ -764,14 +770,12 @@ def print_console_report(results: Dict):
         logger.info(f"Host: {ip}")
         logger.info(f"  Supported versions: {versions}")
         logger.info(f"  Findings: {sum(counts.values())}  ([CRITICAL] {counts['critical']}, [HIGH] {counts['high']}, [MEDIUM] {counts['medium']}, [LOW] {counts['low']}), [INFO] {counts['info']})")
-        # Findings grouped by severity
         for sev in ["critical", "high", "medium", "low", "info"]:
             items = [f for f in svc["flaws"] if f["severity"] == sev]
             if items:
                 logger.info(f"  [{sev.upper()}]")
                 for it in items:
                     logger.info(f"    - {it['description']}")
-        # Accepted transforms summary
         if svc["accepted_transforms"]["main"] or svc["accepted_transforms"]["aggressive"]:
             logger.info("  Accepted transforms:")
             if svc["accepted_transforms"]["main"]:
@@ -791,7 +795,6 @@ def generate_reports(vpns: Dict, start_time: str, end_time: str):
         "targets": list(vpns.keys()),
     }
 
-    # Files
     xml_file = "ikess_output.xml"
     json_file = "ikess_output.json"
     html_file = "ikess_report.html"
@@ -812,8 +815,17 @@ def generate_reports(vpns: Dict, start_time: str, end_time: str):
 
 def scan_target(ip: str) -> Dict:
     logger.info(f"Starting comprehensive scan of {ip}")
-    vpn = {ip: {"v1": False, "v2": False, "vid": [], "transforms": [], "aggressive": []}}
+    vpn = {ip: {
+        "v1": False, "v2": False,
+        "vid": [],
+        "transforms": [],                   # strings: SA blocks
+        "aggressive": [],                   # strings: SA blocks
+        "accepted_transform_keys_main": [], # keys that worked (for backoff retry)
+        "accepted_transform_keys_aggr": [], # keys that worked (for backoff retry)
+        "showbackoff": "N/A",
+    }}
 
+    # Version discovery
     check_ikev1(vpn, ip)
     check_ikev2(vpn, ip)
 
@@ -821,48 +833,65 @@ def scan_target(ip: str) -> Dict:
         logger.warning(f"No IKE services found on {ip}")
         return vpn
 
-    # Aggressive mode only if IKEv1
+    # Aggressive (IKEv1 only)
     test_aggressive_mode(vpn, ip)
 
     # IKEv2 extras
     test_ikev2_features(vpn, ip)
 
-    # Transforms
+    # Main Mode transforms
     test_transforms(vpn, ip)
 
-    # Fingerprint behavior
-    fingerprint_backoff(vpn, ip)
+    # Optional: Backoff fingerprint (off by default)
+    if FINGERPRINT:
+        # first try generic
+        fingerprint_backoff(vpn, ip)
 
-    # If still N/A and you have at least one accepted transform, retry with it
-    if vpn.get(ip, {}).get("showbackoff") in (None, "N/A"):
-        first_transform_key = None
-        # pick the first accepted transform key from your discovery (e.g. "7/256,5,14,1")
-        if vpn.get(ip, {}).get("accepted_transforms_main"):
-            first_transform_key = vpn[ip]["accepted_transforms_main"][0]["key"]
-        elif vpn.get(ip, {}).get("accepted_transforms_aggr"):
-            first_transform_key = vpn[ip]["accepted_transforms_aggr"][0]["key"]
-
-        if first_transform_key:
-            fingerprint_backoff(vpns, ip, transform=first_transform_key)    
+        # If still N/A and we have accepted transform keys, retry with first key
+        if vpn.get(ip, {}).get("showbackoff") in (None, "N/A", "", "unknown"):
+            tkey = None
+            mains = vpn[ip].get("accepted_transform_keys_main") or []
+            aggrs = vpn[ip].get("accepted_transform_keys_aggr") or []
+            if mains:
+                tkey = mains[0]
+            elif aggrs:
+                tkey = aggrs[0]
+            if tkey:
+                fingerprint_backoff(vpn, ip, transform=tkey)
 
     logger.info(f"Completed analysis of {ip}")
     return vpn
 
 def main():
+    global FULLALGS, FINGERPRINT
+
     parser = argparse.ArgumentParser(
-        description="ikess v1.0 - IPsec VPN Security Scanner",
+        description="ikess v1.1 - IKE Security Scanner",
         epilog="Scans for IKE/IPsec VPNs and presents enhanced, readable reports.",
     )
     parser.add_argument("targets", nargs="+", help="One or more target IP addresses or hostnames")
     parser.add_argument("-t", "--threads", type=int, default=1, help="Number of concurrent threads (default: 1)")
-    args = parser.parse_args()
+    parser.add_argument("--fullalgs", action="store_true",
+                        help="Use a broader transform search set (more enc/hash/auth/group combinations)")
+    parser.add_argument("--fingerprint", action="store_true",
+                        help="Run --showbackoff fingerprinting (and retry with a known accepted transform if available)")
 
-    logger.info("ikess v1.0 - IKE Security Scanner")
+    args = parser.parse_args()
+    FULLALGS = bool(args.fullalgs)
+    FINGERPRINT = bool(args.fingerprint)
+
+    logger.info("ikess v1.1 - IKE Security Scanner")
     logger.info("Author: LRVT (https://github.com/l4rm4nd)")
     logger.info("╰─⠠⠵ Original (iker.py) by Julio Gomez, enhanced by nullenc0de")
 
     if not check_ike_dependency():
         return 1
+
+    if FULLALGS:
+        logger.info("Using expanded transform candidate sets (--fullalgs)")
+
+    if FINGERPRINT:
+        logger.info("Backoff fingerprinting enabled (--fingerprint)")
 
     start = datetime.now()
     logger.info(f"Scan started at {start.strftime('%Y-%m-%d %H:%M:%S')}")
