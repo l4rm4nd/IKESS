@@ -60,69 +60,98 @@ FLAWS = {
 # Group: 2=modp1024, 5=modp1536, 14=modp2048, 15=modp3072, 16=modp4096
 
 MAIN_MODE_TRANSFORMS = [
-    # Legacy 3DES combos (short set)
-    "5,1,1,2",             # 3DES-MD5-PSK-G2
-    "5,1,3,2",             # 3DES-MD5-RSA_Sig-G2
-    "5,2,1,2",             # 3DES-SHA1-PSK-G2
-    "5,2,3,2",             # 3DES-SHA1-RSA_Sig-G2
-    "5,2,64221,2",         # 3DES-SHA1-Hybrid_RSA-G2
-    "5,2,1,14",            # 3DES-SHA1-PSK-G14
+    # ===== Common, practical mixes (fast to try) =====
+    "7/128,2,1,14",        # AES128-SHA1-PSK-G14 (very common legacy default)
+    "7/128,5,1,14",        # AES128-SHA256-PSK-G14 (common modern default)
+    "7/256,2,1,14",        # AES256-SHA1-PSK-G14
+    "7/256,5,1,14",        # AES256-SHA256-PSK-G14 (very common modern default)
 
-    # Common AES
-    "7/128,2,1,14",        # AES128-SHA1-PSK-G14
-    "7/128,5,1,14",        # AES128-SHA256-PSK-G14
     "7/128,2,3,14",        # AES128-SHA1-RSA_Sig-G14
     "7/128,5,3,14",        # AES128-SHA256-RSA_Sig-G14
-    "7/256,2,1,14",        # AES256-SHA1-PSK-G14
-    "7/256,5,1,14",        # AES256-SHA256-PSK-G14
     "7/256,2,3,14",        # AES256-SHA1-RSA_Sig-G14
     "7/256,5,3,14",        # AES256-SHA256-RSA_Sig-G14
+
+    # ===== 3DES fallbacks found in older deployments =====
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "5,2,1,14",            # 3DES-SHA1-PSK-G14
+    "5,2,3,2",             # 3DES-SHA1-RSA_Sig-G2
+    "5,2,3,14",            # 3DES-SHA1-RSA_Sig-G14
 ]
 
-# Expanded set used when --fullalgs is provided
+AGGRESSIVE_MODE_TRANSFORMS = [
+    # Aggressive mode kept PSK-only for practicality (only PSK can leak hash)
+    "7/128,2,1,14",        # AES128-SHA1-PSK-G14
+    "7/256,5,1,14",        # AES256-SHA256-PSK-G14
+    "5,2,1,2",             # 3DES-SHA1-PSK-G2
+    "5,2,1,14",            # 3DES-SHA1-PSK-G14
+]
+
+# Expanded set used when --fullalgs is provided (annotated and deduped)
 MAIN_MODE_TRANSFORMS_FULL = list(dict.fromkeys(MAIN_MODE_TRANSFORMS + [
-    # More 3DES
+    # ===== DES (weak, legacy) =====
+    # G2 (modp1024)
+    "1,1,1,2",             # DES-MD5-PSK-G2
+    "1,1,3,2",             # DES-MD5-RSA_Sig-G2
+    "1,1,64221,2",         # DES-MD5-Hybrid_RSA-G2
+    "1,2,1,2",             # DES-SHA1-PSK-G2
+    "1,2,3,2",             # DES-SHA1-RSA_Sig-G2
+    "1,2,64221,2",         # DES-SHA1-Hybrid_RSA-G2
+    # G14 (modp2048)
+    "1,1,1,14",            # DES-MD5-PSK-G14
+    "1,1,3,14",            # DES-MD5-RSA_Sig-G14
+    "1,1,64221,14",        # DES-MD5-Hybrid_RSA-G14
+    "1,2,1,14",            # DES-SHA1-PSK-G14
+    "1,2,3,14",            # DES-SHA1-RSA_Sig-G14
+    "1,2,64221,14",        # DES-SHA1-Hybrid_RSA-G14
+
+    # ===== More 3DES variants (legacy but still seen) =====
+    "5,1,1,2",             # 3DES-MD5-PSK-G2
+    "5,1,3,2",             # 3DES-MD5-RSA_Sig-G2
     "5,1,64221,2",         # 3DES-MD5-Hybrid_RSA-G2
     "5,1,1,14",            # 3DES-MD5-PSK-G14
     "5,1,3,14",            # 3DES-MD5-RSA_Sig-G14
     "5,1,64221,14",        # 3DES-MD5-Hybrid_RSA-G14
-    "5,2,3,14",            # 3DES-SHA1-RSA_Sig-G14
+    "5,2,64221,2",         # 3DES-SHA1-Hybrid_RSA-G2
     "5,2,64221,14",        # 3DES-SHA1-Hybrid_RSA-G14
     "5,2,1,5",             # 3DES-SHA1-PSK-G5 (1536)
 
-    # AES + more DH groups
-    "7/128,2,1,2",
-    "7/128,2,1,5",
-    "7/128,2,1,15",
-    "7/128,2,1,16",
-    "7/256,2,1,2",
-    "7/256,2,1,5",
-    "7/256,2,1,15",
-    "7/256,2,1,16",
+    # ===== AES across broader DH groups (popular variants) =====
+    "7/128,2,1,2",         # AES128-SHA1-PSK-G2
+    "7/128,2,1,5",         # AES128-SHA1-PSK-G5
+    "7/128,2,1,15",        # AES128-SHA1-PSK-G15
+    "7/128,2,1,16",        # AES128-SHA1-PSK-G16
+    "7/256,2,1,2",         # AES256-SHA1-PSK-G2
+    "7/256,2,1,5",         # AES256-SHA1-PSK-G5
+    "7/256,2,1,15",        # AES256-SHA1-PSK-G15
+    "7/256,2,1,16",        # AES256-SHA1-PSK-G16
 
-    # RSA_Sig/Hybrid variants with MD5 (seen on legacy)
-    "7/128,1,3,14",
-    "7/256,1,3,14",
-    "7/128,1,64221,14",
-    "7/256,1,64221,14",
+    # ===== RSA_Sig/Hybrid with MD5 (seen on very old boxes) =====
+    "7/128,1,3,14",        # AES128-MD5-RSA_Sig-G14
+    "7/256,1,3,14",        # AES256-MD5-RSA_Sig-G14
+    "7/128,1,64221,14",    # AES128-MD5-Hybrid_RSA-G14
+    "7/256,1,64221,14",    # AES256-MD5-Hybrid_RSA-G14
 ]))
 
-AGGRESSIVE_MODE_TRANSFORMS = [
-    "5,2,1,2",             # 3DES-SHA1-PSK-G2
-    "5,2,1,14",            # 3DES-SHA1-PSK-G14
-    "7/128,2,1,14",        # AES128-SHA1-PSK-G14
-    "7/256,5,1,14",        # AES256-SHA256-PSK-G14
-]
-
+# Aggressive mode full set (PSK-only to target hash exposure)
 AGGRESSIVE_MODE_TRANSFORMS_FULL = list(dict.fromkeys(AGGRESSIVE_MODE_TRANSFORMS + [
-    "7/128,2,1,2",
-    "7/256,2,1,2",
-    "7/128,2,1,5",
-    "7/256,2,1,5",
-    "7/128,5,1,14",
-    "7/256,5,1,16",
-    "5,1,1,2",
-    "5,1,1,14",
+    # ===== AES PSK across more DH groups =====
+    "7/128,2,1,2",         # AES128-SHA1-PSK-G2
+    "7/256,2,1,2",         # AES256-SHA1-PSK-G2
+    "7/128,2,1,5",         # AES128-SHA1-PSK-G5
+    "7/256,2,1,5",         # AES256-SHA1-PSK-G5
+    "7/128,5,1,14",        # AES128-SHA256-PSK-G14
+    "7/256,5,1,16",        # AES256-SHA256-PSK-G16
+
+    # ===== 3DES PSK MD5 (very old, but shows up) =====
+    "5,1,1,2",             # 3DES-MD5-PSK-G2
+    "5,1,1,14",            # 3DES-MD5-PSK-G14
+
+    # ===== DES PSK additions (weak, legacy; helpful for coverage) =====
+    "1,1,1,2",             # DES-MD5-PSK-G2
+    "1,2,1,2",             # DES-SHA1-PSK-G2
+    "1,1,1,14",            # DES-MD5-PSK-G14
+    "1,2,1,14",            # DES-SHA1-PSK-G14
+    "1,2,1,5",             # DES-SHA1-PSK-G5
 ]))
 
 # Candidate spaces used only when --fullalgs is on
