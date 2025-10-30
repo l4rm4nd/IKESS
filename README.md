@@ -7,7 +7,7 @@ A Python3 Script for Auditing IKE VPN Servers
 
 - Detects IKEv2 VPN servers
 - Detects IKEv1 VPN servers + Aggressive Mode
-- Detects supported transforms (ENC, HASH, AUTH)
+- Detects supported transforms (ENC, HASH, AUTH, GROUP)
 - Saves results as JSON, XML and HTML report
 - Risk rates findings with summary and recommendations
 - Support for fingerprinting via vendor ID (VID)
