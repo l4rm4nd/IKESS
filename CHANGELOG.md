@@ -1,3 +1,10 @@
+## [0.2.3](https://github.com/l4rm4nd/IKESS/compare/v0.2.2...v0.2.3) (2025-10-31)
+
+
+### Bug Fixes
+
+* fullalgs now iterates all possible transforms ([1048312](https://github.com/l4rm4nd/IKESS/commit/10483126562b1f64bb35f1fea66c0723ade958b1))
+
 ## [0.2.2](https://github.com/l4rm4nd/IKESS/compare/v0.2.1...v0.2.2) (2025-10-29)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * save into subdir ([9b25d7d](https://github.com/l4rm4nd/IKESS/commit/9b25d7d7ce9ca980c4dc687ed547b98b18e08923))
-
-## [0.1.3](https://github.com/l4rm4nd/IKESS/compare/v0.1.2...v0.1.3) (2025-10-29)
-
-
-### Bug Fixes
-
-* trigger ci ([a300012](https://github.com/l4rm4nd/IKESS/commit/a3000128c43cbd935a89c638b4db216eef98b9d5))
 
