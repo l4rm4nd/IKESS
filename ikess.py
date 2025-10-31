@@ -54,218 +54,175 @@ FLAWS = {
 }
 
 # ============================= MAIN MODE TRANSFORMS =============================
-# Format: "ENC[/bits],HASH,AUTH,GROUP"
-# ENC: 1=DES, 5=3DES, 7/128=AES128, 7/192=AES192, 7/256=AES256
-# HASH: 1=MD5, 2=SHA1, 5=SHA256
-# AUTH: 1=PSK, 3=RSA_SIG, 64221=HYBRID_RSA
-# GROUP: 2=MODP1024, 5=MODP1536, 14=MODP2048, 15=MODP3072, 16=MODP4096
+# Main Mode is used heavily for site-to-site and "permanent tunnel" style IPsec.
+# It's what most orgs run between firewalls, branch routers, Azure VPN gateways, etc.
+#
+# Why we probe these:
+# - If we get a match here, we learn exactly which crypto/auth/DH combo the peer accepts.
+# - That tells us how modern (AES/SHA256/DH14+), lazy (AES/SHA1/DH2), or ancient (3DES/DES/MD5) the config is.
+# - Weak combos here are still a legit finding even if we can't immediately brute credentials.
+#
+# Format of each transform string below:
+#   "ENC[/bits],HASH,AUTH,GROUP"
+#     ENC:   1=DES, 5=3DES, 7/128=AES128, 7/192=AES192, 7/256=AES256
+#     HASH:  1=MD5, 2=SHA1, 5=SHA256
+#     AUTH:  1=PSK, 3=RSA_SIG (cert-based), 64221=HYBRID_RSA
+#     GROUP: 2=MODP1024, 5=MODP1536, 14=MODP2048, 15=MODP3072, 16=MODP4096, 19=ECP256 (elliptic curve)
+#
+# We group the transforms below from "modern-ish and common in 2025" down to "this belongs in a museum".
+# ===============================================================================
 
 MAIN_MODE_TRANSFORMS = [
-    # === Modern & Common PSK Profiles ===
-    "7/128,5,1,14",   # AES128-SHA256-PSK-MODP2048
-    "7/256,5,1,14",   # AES256-SHA256-PSK-MODP2048
-    "7/128,2,1,14",   # AES128-SHA1-PSK-MODP2048
-    "7/256,2,1,14",   # AES256-SHA1-PSK-MODP2048
+    # ------------------------------------------------------------------
+    # MODERN & COMMON PSK PROFILES (AES*, SHA1/SHA256, PSK, DH14/2048)
+    # Typical for site-to-site tunnels and many "current but not fancy"
+    # vendor templates. DH14 = MODP2048.
+    # ------------------------------------------------------------------
+    "7/128,5,1,14",   # AES128-SHA256-PSK-DH14 (MODP2048)
+    "7/256,5,1,14",   # AES256-SHA256-PSK-DH14 (MODP2048)
+    "7/128,2,1,14",   # AES128-SHA1-PSK-DH14 (MODP2048)
+    "7/256,2,1,14",   # AES256-SHA1-PSK-DH14 (MODP2048)
+    "7/192,2,1,14",   # AES192-SHA1-PSK-DH14 (MODP2048)
+    "7/192,5,1,14",   # AES192-SHA256-PSK-DH14 (MODP2048)
 
-    # === Modern & Common RSA_SIG Profiles ===
-    "7/128,5,3,14",   # AES128-SHA256-RSA_SIG-MODP2048
-    "7/256,5,3,14",   # AES256-SHA256-RSA_SIG-MODP2048
-    "7/128,2,3,14",   # AES128-SHA1-RSA_SIG-MODP2048
-    "7/256,2,3,14",   # AES256-SHA1-RSA_SIG-MODP2048
+    # ------------------------------------------------------------------
+    # MODERN & COMMON RSA_SIG PROFILES (cert-based auth instead of PSK)
+    # RSA_SIG is common for B2B tunnels and "we use certs" deployments.
+    # ------------------------------------------------------------------
+    "7/128,5,3,14",   # AES128-SHA256-RSA_SIG-DH14 (MODP2048)
+    "7/256,5,3,14",   # AES256-SHA256-RSA_SIG-DH14 (MODP2048)
+    "7/128,2,3,14",   # AES128-SHA1-RSA_SIG-DH14 (MODP2048)
+    "7/256,2,3,14",   # AES256-SHA1-RSA_SIG-DH14 (MODP2048)
 
-    # === Legacy but Common (Smaller DH Groups) ===
-    "7/128,2,1,2",    # AES128-SHA1-PSK-MODP1024
-    "7/256,2,1,2",    # AES256-SHA1-PSK-MODP1024
-    "7/128,5,1,5",    # AES128-SHA256-PSK-MODP1536
-    "7/256,5,1,5",    # AES256-SHA256-PSK-MODP1536
-    "7/128,2,1,5",    # AES128-SHA1-PSK-MODP1536
-    "7/256,2,1,5",    # AES256-SHA1-PSK-MODP1536
+    # ------------------------------------------------------------------
+    # RSA_SIG WITH WEAK DH (DH2/1024)
+    # Seen in older "certificate-based" tunnels that never upgraded DH.
+    # DH2 = MODP1024, considered weak today.
+    # ------------------------------------------------------------------
+    "7/128,2,3,2",    # AES128-SHA1-RSA_SIG-DH2 (MODP1024)
+    "7/256,2,3,2",    # AES256-SHA1-RSA_SIG-DH2 (MODP1024)
 
-    # === Weak Crypto (MD5) ===
-    "7/128,1,1,14",   # AES128-MD5-PSK-MODP2048
-    "7/256,1,1,14",   # AES256-MD5-PSK-MODP2048
+    # ------------------------------------------------------------------
+    # PSK WITH WEAK / LEGACY DH GROUPS (DH2/1024, DH5/1536)
+    # Still extremely common in old branch tunnels and firewalls.
+    # DH2 = MODP1024, DH5 = MODP1536.
+    # SHA1 and SHA256 both appear in half-upgraded configs.
+    # ------------------------------------------------------------------
+    "7/128,2,1,2",    # AES128-SHA1-PSK-DH2  (MODP1024)
+    "7/256,2,1,2",    # AES256-SHA1-PSK-DH2  (MODP1024)
+    "7/128,5,1,2",    # AES128-SHA256-PSK-DH2 (MODP1024)
+    "7/256,5,1,2",    # AES256-SHA256-PSK-DH2 (MODP1024)
 
-    # === Larger DH Groups ===
-    "7/128,5,1,16",   # AES128-SHA256-PSK-MODP4096
-    "7/256,5,1,16",   # AES256-SHA256-PSK-MODP4096
+    "7/128,5,1,5",    # AES128-SHA256-PSK-DH5 (MODP1536)
+    "7/256,5,1,5",    # AES256-SHA256-PSK-DH5 (MODP1536)
+    "7/128,2,1,5",    # AES128-SHA1-PSK-DH5   (MODP1536)
+    "7/256,2,1,5",    # AES256-SHA1-PSK-DH5   (MODP1536)
 
-    # === IKEv2 ECP (Elliptic Curve) — may be accepted in IKEv1 by some vendors ===
-    "7/128,5,1,19",   # AES128-SHA256-PSK-ECP256
-    "7/256,5,1,19",   # AES256-SHA256-PSK-ECP256
+    # ------------------------------------------------------------------
+    # VERY HIGH DH GROUPS WITH PSK AND RSA_SIG
+    # These are the "paranoid / we bumped DH to 4096" style configs.
+    # DH16 = MODP4096.
+    # ------------------------------------------------------------------
+    "7/128,5,1,16",   # AES128-SHA256-PSK-DH16 (MODP4096)
+    "7/256,5,1,16",   # AES256-SHA256-PSK-DH16 (MODP4096)
+    "7/128,5,3,16",   # AES128-SHA256-RSA_SIG-DH16 (MODP4096)
+    "7/256,5,3,16",   # AES256-SHA256-RSA_SIG-DH16 (MODP4096)
 
-    # === 3DES Legacy (Still Seen) ===
-    "5,2,1,14",       # 3DES-SHA1-PSK-MODP2048
-    "5,2,1,2",        # 3DES-SHA1-PSK-MODP1024
-    "5,2,3,14",       # 3DES-SHA1-RSA_SIG-MODP2048
-    "5,2,3,2",        # 3DES-SHA1-RSA_SIG-MODP1024
+    # ------------------------------------------------------------------
+    # ELLIPTIC CURVE DH GROUPS (ECP256 etc.)
+    # Some vendors advertise IKEv2/ECP but will still answer in IKEv1.
+    # Group 19 is typically ECP256.
+    # ------------------------------------------------------------------
+    "7/128,5,1,19",   # AES128-SHA256-PSK-ECP256 (DH19)
+    "7/256,5,1,19",   # AES256-SHA256-PSK-ECP256 (DH19)
 
-    # === DES (Deprecated, Insecure) ===
-    "1,2,1,14",       # DES-SHA1-PSK-MODP2048
-    "1,1,1,14",       # DES-MD5-PSK-MODP2048
-    "1,2,1,2",        # DES-SHA1-PSK-MODP1024
-    "1,1,1,2",        # DES-MD5-PSK-MODP1024
+    # ------------------------------------------------------------------
+    # WEAK HASH (MD5) WITH PSK
+    # These are strong "red flag" combos. MD5 is collision-prone.
+    # ------------------------------------------------------------------
+    "7/128,1,1,14",   # AES128-MD5-PSK-DH14 (MODP2048)
+    "7/256,1,1,14",   # AES256-MD5-PSK-DH14 (MODP2048)
+
+    # ------------------------------------------------------------------
+    # 3DES LEGACY
+    # 3DES + SHA1 + PSK/RSA_SIG is still depressingly common on
+    # older Cisco/SonicWall/WatchGuard tunnels. DH2 = MODP1024.
+    # ------------------------------------------------------------------
+    "5,2,1,14",       # 3DES-SHA1-PSK-DH14 (MODP2048)
+    "5,2,1,2",        # 3DES-SHA1-PSK-DH2  (MODP1024)
+    "5,2,3,14",       # 3DES-SHA1-RSA_SIG-DH14 (MODP2048)
+    "5,2,3,2",        # 3DES-SHA1-RSA_SIG-DH2  (MODP1024)
+
+    # ------------------------------------------------------------------
+    # DES / MD5 / SHA1 ANCIENT GARBAGE
+    # DES and MD5 are fully broken. If the peer accepts these,
+    # it's an instant "critical/heritage VPN" finding.
+    # DH2 = MODP1024, DH14 = MODP2048.
+    # ------------------------------------------------------------------
+    "1,2,1,14",       # DES-SHA1-PSK-DH14 (MODP2048)
+    "1,1,1,14",       # DES-MD5-PSK-DH14 (MODP2048)
+    "1,2,1,2",        # DES-SHA1-PSK-DH2  (MODP1024)
+    "1,1,1,2",        # DES-MD5-PSK-DH2  (MODP1024)
 ]
 
 # ============================= AGGRESSIVE MODE TRANSFORMS =============================
-# Aggressive Mode is IKEv1-only and typically PSK-focused
-# We keep RSA/HYBRID out unless explicitly requested via --auth
+# Aggressive Mode is IKEv1-only and most interesting for PSK-based VPNs,
+# because misconfigured gateways can leak an ID hash that can be cracked offline.
+# We generally don't include RSA_SIG here by default, because the "classic"
+# aggressive-mode exposure vector is PSK.
+# =====================================================================================
 
 AGGRESSIVE_MODE_TRANSFORMS = [
-    # === Modern PSK ===
-    "7/128,5,1,14",   # AES128-SHA256-PSK-MODP2048
-    "7/256,5,1,14",   # AES256-SHA256-PSK-MODP2048
-    "7/128,2,1,14",   # AES128-SHA1-PSK-MODP2048
-    "7/256,2,1,14",   # AES256-SHA1-PSK-MODP2048
+    # ------------------------------------------------------------------
+    # MODERN(ish) PSK WITH DH14 (MODP2048)
+    # This is what you'd hope to see in a semi-updated environment.
+    # ------------------------------------------------------------------
+    "7/128,5,1,14",   # AES128-SHA256-PSK-DH14 (MODP2048)
+    "7/256,5,1,14",   # AES256-SHA256-PSK-DH14 (MODP2048)
+    "7/128,2,1,14",   # AES128-SHA1-PSK-DH14  (MODP2048)
+    "7/256,2,1,14",   # AES256-SHA1-PSK-DH14  (MODP2048)
 
-    # === Legacy DH Groups ===
-    "7/128,2,1,2",    # AES128-SHA1-PSK-MODP1024
-    "7/256,2,1,2",    # AES256-SHA1-PSK-MODP1024
-    "7/128,5,1,5",    # AES128-SHA256-PSK-MODP1536
-    "7/256,5,1,5",    # AES256-SHA256-PSK-MODP1536
-    "7/128,2,1,5",    # AES128-SHA1-PSK-MODP1536
-    "7/128,5,1,16",   # AES128-SHA256-PSK-MODP4096
-    "7/256,5,1,16",   # AES256-SHA256-PSK-MODP4096
+    # ------------------------------------------------------------------
+    # LEGACY PSK WITH SMALLER DH (DH2/1024, DH5/1536)
+    # This is extremely common in old remote-access VPN configs.
+    # DH2 = MODP1024, DH5 = MODP1536.
+    # ------------------------------------------------------------------
+    "7/128,2,1,2",    # AES128-SHA1-PSK-DH2  (MODP1024)
+    "7/256,2,1,2",    # AES256-SHA1-PSK-DH2  (MODP1024)
+    "7/128,5,1,5",    # AES128-SHA256-PSK-DH5 (MODP1536)
+    "7/256,5,1,5",    # AES256-SHA256-PSK-DH5 (MODP1536)
+    "7/128,2,1,5",    # AES128-SHA1-PSK-DH5   (MODP1536)
 
-    # === 3DES Legacy ===
-    "5,2,1,5",        # 3DES-SHA1-PSK-MODP1536
-    "1,2,1,5",        # DES-SHA1-PSK-MODP1536
-    "5,2,1,14",       # 3DES-SHA1-PSK-MODP2048
-    "5,2,1,2",        # 3DES-SHA1-PSK-MODP1024
-    "5,1,1,14",       # 3DES-MD5-PSK-MODP2048
-    "5,1,1,2",        # 3DES-MD5-PSK-MODP1024
+    # ------------------------------------------------------------------
+    # VERY HIGH DH GROUPS WITH PSK (DH16/4096)
+    # Some orgs crank DH size but still keep PSK.
+    # DH16 = MODP4096.
+    # ------------------------------------------------------------------
+    "7/128,5,1,16",   # AES128-SHA256-PSK-DH16 (MODP4096)
+    "7/256,5,1,16",   # AES256-SHA256-PSK-DH16 (MODP4096)
 
-    # === DES (Deprecated) ===
-    "1,2,1,14",       # DES-SHA1-PSK-MODP2048
-    "1,1,1,14",       # DES-MD5-PSK-MODP2048
-    "1,2,1,2",        # DES-SHA1-PSK-MODP1024
-    "1,1,1,2",        # DES-MD5-PSK-MODP1024
+    # ------------------------------------------------------------------
+    # 3DES / DES LEGACY PSK
+    # These are the "this VPN is from 2004 and never died" configs.
+    # SHA1 or even MD5, plus tiny DH groups. All of this is reportable.
+    # ------------------------------------------------------------------
+    "5,2,1,5",        # 3DES-SHA1-PSK-DH5   (MODP1536)
+    "1,2,1,5",        # DES-SHA1-PSK-DH5    (MODP1536)
+    "5,2,1,14",       # 3DES-SHA1-PSK-DH14  (MODP2048)
+    "5,2,1,2",        # 3DES-SHA1-PSK-DH2   (MODP1024)
+    "5,1,1,14",       # 3DES-MD5-PSK-DH14   (MODP2048)
+    "5,1,1,2",        # 3DES-MD5-PSK-DH2    (MODP1024)
+
+    # ------------------------------------------------------------------
+    # DES / MD5 / SHA1 ANCIENT PSK
+    # If a peer accepts any of these in Aggressive Mode, it's basically
+    # instant critical: PSK, weak hash, weak cipher, weak DH, Aggressive.
+    # ------------------------------------------------------------------
+    "1,2,1,14",       # DES-SHA1-PSK-DH14   (MODP2048)
+    "1,1,1,14",       # DES-MD5-PSK-DH14    (MODP2048)
+    "1,2,1,2",        # DES-SHA1-PSK-DH2    (MODP1024)
+    "1,1,1,2",        # DES-MD5-PSK-DH2     (MODP1024)
 ]
-
-# ============================= FULL EXPANDED SETS (when --fullalgs) =============================
-MAIN_MODE_TRANSFORMS_FULL = list(dict.fromkeys(MAIN_MODE_TRANSFORMS + [
-    # === DES (Legacy, Insecure) ===
-    "1,2,1,2",        # DES-SHA1-PSK-MODP1024
-    "1,2,1,5",        # DES-SHA1-PSK-MODP1536
-    "1,2,1,14",       # DES-SHA1-PSK-MODP2048
-    "1,1,1,2",        # DES-MD5-PSK-MODP1024
-    "1,1,1,14",       # DES-MD5-PSK-MODP2048
-    "1,2,3,2",        # DES-SHA1-RSA_SIG-MODP1024
-    "1,2,3,14",       # DES-SHA1-RSA_SIG-MODP2048
-    "1,1,3,2",        # DES-MD5-RSA_SIG-MODP1024
-    "1,1,3,14",       # DES-MD5-RSA_SIG-MODP2048
-    "1,2,64221,2",    # DES-SHA1-HYBRID_RSA-MODP1024
-    "1,2,64221,14",   # DES-SHA1-HYBRID_RSA-MODP2048
-    "1,1,64221,2",    # DES-MD5-HYBRID_RSA-MODP1024
-    "1,1,64221,14",   # DES-MD5-HYBRID_RSA-MODP2048
-
-    # === 3DES (Deprecated but Common) ===
-    "5,2,1,2",        # 3DES-SHA1-PSK-MODP1024
-    "5,2,1,5",        # 3DES-SHA1-PSK-MODP1536
-    "5,2,1,14",       # 3DES-SHA1-PSK-MODP2048
-    "5,1,1,2",        # 3DES-MD5-PSK-MODP1024
-    "5,1,1,14",       # 3DES-MD5-PSK-MODP2048
-    "5,2,3,2",        # 3DES-SHA1-RSA_SIG-MODP1024
-    "5,2,3,14",       # 3DES-SHA1-RSA_SIG-MODP2048
-    "5,1,3,2",        # 3DES-MD5-RSA_SIG-MODP1024
-    "5,1,3,14",       # 3DES-MD5-RSA_SIG-MODP2048
-    "5,2,64221,2",    # 3DES-SHA1-HYBRID_RSA-MODP1024
-    "5,2,64221,14",   # 3DES-SHA1-HYBRID_RSA-MODP2048
-    "5,1,64221,2",    # 3DES-MD5-HYBRID_RSA-MODP1024
-    "5,1,64221,14",   # 3DES-MD5-HYBRID_RSA-MODP2048
-
-    # === AES-128 across DH groups ===
-    "7/128,2,1,2",    # AES128-SHA1-PSK-MODP1024
-    "7/128,2,1,5",    # AES128-SHA1-PSK-MODP1536
-    "7/128,2,1,15",   # AES128-SHA1-PSK-MODP3072
-    "7/128,2,1,16",   # AES128-SHA1-PSK-MODP4096
-    "7/128,5,1,2",    # AES128-SHA256-PSK-MODP1024
-    "7/128,5,1,5",    # AES128-SHA256-PSK-MODP1536
-    "7/128,5,1,15",   # AES128-SHA256-PSK-MODP3072
-    "7/128,5,1,16",   # AES128-SHA256-PSK-MODP4096
-    "7/128,2,3,2",    # AES128-SHA1-RSA_SIG-MODP1024
-    "7/128,2,3,5",    # AES128-SHA1-RSA_SIG-MODP1536
-    "7/128,2,3,16",   # AES128-SHA1-RSA_SIG-MODP4096
-    "7/128,5,3,2",    # AES128-SHA256-RSA_SIG-MODP1024
-    "7/128,5,3,5",    # AES128-SHA256-RSA_SIG-MODP1536
-    "7/128,5,3,16",   # AES128-SHA256-RSA_SIG-MODP4096
-    "7/128,2,64221,14", # AES128-SHA1-HYBRID_RSA-MODP2048
-    "7/128,5,64221,14", # AES128-SHA256-HYBRID_RSA-MODP2048
-    "7/128,2,64221,2",  # AES128-SHA1-HYBRID_RSA-MODP1024
-    "7/128,5,64221,2",  # AES128-SHA256-HYBRID_RSA-MODP1024
-
-    # === AES-192 ===
-    "7/192,2,1,14",   # AES192-SHA1-PSK-MODP2048
-    "7/192,5,1,14",   # AES192-SHA256-PSK-MODP2048
-    "7/192,2,1,2",    # AES192-SHA1-PSK-MODP1024
-    "7/192,5,1,2",    # AES192-SHA256-PSK-MODP1024
-    "7/192,2,3,14",   # AES192-SHA1-RSA_SIG-MODP2048
-    "7/192,5,3,14",   # AES192-SHA256-RSA_SIG-MODP2048
-
-    # === AES-256 ===
-    "7/256,2,1,2",    # AES256-SHA1-PSK-MODP1024
-    "7/256,2,1,5",    # AES256-SHA1-PSK-MODP1536
-    "7/256,2,1,15",   # AES256-SHA1-PSK-MODP3072
-    "7/256,2,1,16",   # AES256-SHA1-PSK-MODP4096
-    "7/256,5,1,2",    # AES256-SHA256-PSK-MODP1024
-    "7/256,5,1,5",    # AES256-SHA256-PSK-MODP1536
-    "7/256,5,1,15",   # AES256-SHA256-PSK-MODP3072
-    "7/256,5,1,16",   # AES256-SHA256-PSK-MODP4096
-    "7/256,2,3,2",    # AES256-SHA1-RSA_SIG-MODP1024
-    "7/256,2,3,5",    # AES256-SHA1-RSA_SIG-MODP1536
-    "7/256,2,3,16",   # AES256-SHA1-RSA_SIG-MODP4096
-    "7/256,5,3,2",    # AES256-SHA256-RSA_SIG-MODP1024
-    "7/256,5,3,5",    # AES256-SHA256-RSA_SIG-MODP1536
-    "7/256,5,3,16",   # AES256-SHA256-RSA_SIG-MODP4096
-    "7/256,2,64221,14", # AES256-SHA1-HYBRID_RSA-MODP2048
-    "7/256,5,64221,14", # AES256-SHA256-HYBRID_RSA-MODP2048
-    "7/256,2,64221,2",  # AES256-SHA1-HYBRID_RSA-MODP1024
-    "7/256,5,64221,2",  # AES256-SHA256-HYBRID_RSA-MODP1024
-
-    # === AES + MD5 (Edge Cases) ===
-    "7/128,1,1,14",   # AES128-MD5-PSK-MODP2048
-    "7/256,1,1,14",   # AES256-MD5-PSK-MODP2048
-    "7/128,1,3,14",   # AES128-MD5-RSA_SIG-MODP2048
-    "7/256,1,3,14",   # AES256-MD5-RSA_SIG-MODP2048
-    
-    # === AES + ECP
-    "7/128,5,1,19",   # AES128-SHA256-PSK-ECP256
-    "7/256,5,1,19",   # AES256-SHA256-PSK-ECP256
-    "7/128,5,3,19",   # AES128-SHA256-RSA_SIG-ECP256
-    "7/256,5,3,19",   # AES256-SHA256-RSA_SIG-ECP256
-]))
-
-AGGRESSIVE_MODE_TRANSFORMS_FULL = list(dict.fromkeys(AGGRESSIVE_MODE_TRANSFORMS + [
-    "7/128,2,1,2",    # AES128-SHA1-PSK-MODP1024
-    "7/128,2,1,5",    # AES128-SHA1-PSK-MODP1536
-    "7/128,2,1,15",   # AES128-SHA1-PSK-MODP3072
-    "7/128,2,1,16",   # AES128-SHA1-PSK-MODP4096
-    "7/128,5,1,2",    # AES128-SHA256-PSK-MODP1024
-    "7/128,5,1,5",    # AES128-SHA256-PSK-MODP1536
-    "7/128,5,1,15",   # AES128-SHA256-PSK-MODP3072
-    "7/128,5,1,16",   # AES128-SHA256-PSK-MODP4096
-    "7/256,2,1,2",    # AES256-SHA1-PSK-MODP1024
-    "7/256,2,1,5",    # AES256-SHA1-PSK-MODP1536
-    "7/256,2,1,15",   # AES256-SHA1-PSK-MODP3072
-    "7/256,2,1,16",   # AES256-SHA1-PSK-MODP4096
-    "7/256,5,1,2",    # AES256-SHA256-PSK-MODP1024
-    "7/256,5,1,5",    # AES256-SHA256-PSK-MODP1536
-    "7/256,5,1,15",   # AES256-SHA256-PSK-MODP3072
-    "7/256,5,1,16",   # AES256-SHA256-PSK-MODP4096
-    "7/192,2,1,14",   # AES192-SHA1-PSK-MODP2048
-    "7/192,2,1,2",    # AES192-SHA1-PSK-MODP1024
-    "7/192,5,1,14",   # AES192-SHA256-PSK-MODP2048
-    "7/192,5,1,2",    # AES192-SHA256-PSK-MODP1024
-    "5,2,1,2",        # 3DES-SHA1-PSK-MODP1024
-    "5,2,1,5",        # 3DES-SHA1-PSK-MODP1536
-    "5,2,1,14",       # 3DES-SHA1-PSK-MODP2048
-    "5,1,1,2",        # 3DES-MD5-PSK-MODP1024
-    "5,1,1,14",       # 3DES-MD5-PSK-MODP2048
-    "1,2,1,2",        # DES-SHA1-PSK-MODP1024
-    "1,2,1,5",        # DES-SHA1-PSK-MODP1536
-    "1,2,1,14",       # DES-SHA1-PSK-MODP2048
-    "1,1,1,2",        # DES-MD5-PSK-MODP1024
-    "1,1,1,14",       # DES-MD5-PSK-MODP2048
-]))
 
 # Full cross-product spaces (used only with --fullalgs and custom args)
 ENC_FULL   = ["1", "5", "7/128", "7/192", "7/256"]
@@ -453,24 +410,84 @@ def _try_transform(ip: str, transform: str, aggressive: bool = False) -> str:
     return _strip_banner(out)
 
 def _transform_sets() -> Tuple[List[str], List[str]]:
-    custom_main, custom_aggr = [], []
+    """
+    Decide which transform sets to try for Main Mode and Aggressive Mode.
+
+    Behavior:
+    - If --fullalgs is set:
+        * Build full cartesian product from ENC_FULL, HASH_FULL, AUTH_FULL, GROUP_FULL
+          for BOTH Main Mode and Aggressive Mode.
+          (This is now truly exhaustive.)
+    - Else (no --fullalgs):
+        * Use curated baseline MAIN_MODE_TRANSFORMS / AGGRESSIVE_MODE_TRANSFORMS.
+        * If custom alg lists were provided, merge them in (or replace if --onlycustom).
+    """
+
     any_custom = bool(CUSTOM_ENC or CUSTOM_HASH or CUSTOM_AUTH or CUSTOM_GROUP)
+
+    # 1. If FULLALGS: brute-force every combo from *_FULL
+    if FULLALGS:
+        # If the user ALSO provided custom lists and --onlycustom,
+        # honor --onlycustom exactly.
+        if ONLYCUSTOM and any_custom:
+            encs = CUSTOM_ENC or ENC_FULL
+            hashes = CUSTOM_HASH or HASH_FULL
+            auths = CUSTOM_AUTH or AUTH_FULL
+            groups = CUSTOM_GROUP or GROUP_FULL
+        else:
+            # FULL means: ignore curated lists and just take the global full sets,
+            # unless user explicitly restricted some dimensions via --enc/--hash/...
+            encs = CUSTOM_ENC or ENC_FULL
+            hashes = CUSTOM_HASH or HASH_FULL
+            auths = CUSTOM_AUTH or AUTH_FULL
+            groups = CUSTOM_GROUP or GROUP_FULL
+
+        # Build exhaustive combinations for Main Mode
+        main_all = _build_transform_space(encs, hashes, auths, groups)
+
+        # Build exhaustive combinations for Aggressive Mode
+        # Historically you'd bias Aggressive to PSK only,
+        # but "all possible transforms" means we include all auths here too.
+        aggr_all = _build_transform_space(encs, hashes, auths, groups)
+
+        # Deduplicate while preserving order
+        main_all = list(dict.fromkeys(main_all))
+        aggr_all = list(dict.fromkeys(aggr_all))
+
+        return (main_all, aggr_all)
+
+    # 2. If we're NOT in FULLALGS:
+    #    use curated sets, then possibly merge/override with custom.
     if any_custom:
+        # Build custom cartesian products (or restricted cartesian products)
         encs = CUSTOM_ENC or ENC_FULL
         hashes = CUSTOM_HASH or HASH_FULL
         auths = CUSTOM_AUTH or AUTH_FULL
         groups = CUSTOM_GROUP or GROUP_FULL
+
         custom_main = _build_transform_space(encs, hashes, auths, groups)
-        aggr_auths = CUSTOM_AUTH or ["1"]
+
+        # Aggressive mode normally PSK-focused unless caller asked for other auths.
+        aggr_auths = CUSTOM_AUTH or ["1"]  # "1" = PSK
         custom_aggr = _build_transform_space(encs, hashes, aggr_auths, groups)
-    if ONLYCUSTOM and any_custom:
-        return (list(dict.fromkeys(custom_main)), list(dict.fromkeys(custom_aggr)))
-    base_main = list(MAIN_MODE_TRANSFORMS_FULL if FULLALGS else MAIN_MODE_TRANSFORMS)
-    base_aggr = list(AGGRESSIVE_MODE_TRANSFORMS_FULL if FULLALGS else AGGRESSIVE_MODE_TRANSFORMS)
-    if any_custom:
+
+        if ONLYCUSTOM:
+            # Only custom transforms
+            return (
+                list(dict.fromkeys(custom_main)),
+                list(dict.fromkeys(custom_aggr)),
+            )
+
+        # Merge curated + custom
+        base_main = list(MAIN_MODE_TRANSFORMS)
+        base_aggr = list(AGGRESSIVE_MODE_TRANSFORMS)
+
         base_main = list(dict.fromkeys(base_main + custom_main))
         base_aggr = list(dict.fromkeys(base_aggr + custom_aggr))
-    return base_main, base_aggr
+        return (base_main, base_aggr)
+
+    # 3. Default, no fullalgs, no custom:
+    return (list(MAIN_MODE_TRANSFORMS), list(AGGRESSIVE_MODE_TRANSFORMS))
 
 def test_transforms(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     logger.info(f"Testing encryption algorithms for {ip}")
