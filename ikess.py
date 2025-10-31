@@ -1153,24 +1153,18 @@ def main() -> int:
         prog="ikess",
         description=(
             "ikess - IKE Security Scanner (Sequential Mode)\n\n"
-            "Scans one or more targets (IP or CIDR) sequentially with ike-scan, detects IKEv1/IKEv2,\n"
-            "tests curated or expanded transform sets, optionally fingerprints backoff behavior, and\n"
-            "produces XML, JSON, and HTML reports with findings and proof sections.\n\n"
-            "Requirements:\n"
-            "  - The external binary 'ike-scan' must be installed and in PATH.\n"
-            "  - Root privileges are typically required to send raw IKE packets (use sudo).\n\n"
-            "How targets are interpreted:\n"
-            "  - Single IP: 192.0.2.10\n"
-            "  - CIDR: 192.0.2.0/24 (all usable hosts are scanned)\n\n"
+            "Scans targets with ike-scan, detects IKEv1/IKEv2, tests transforms,\n"
+            "and generates XML/JSON/HTML reports.\n\n"
             "Scan flow per host:\n"
             "  1) IKEv1 discovery\n"
             "  2) IKEv2 discovery\n"
-            "  3) Aggressive Mode tests (only if IKEv1 observed)\n"
-            "  4) Main Mode transform tests (curated by default or expanded when requested)\n"
+            "  3) Aggressive Mode tests (if IKEv1)\n"
+            "  4) Transform tests:\n"
+            "     - default: curated common+legacy combos\n"
+            "     - --fullalgs: brute-force all ENC/HASH/AUTH/DH combos\n"
             "  5) Optional backoff fingerprinting (--fingerprint)\n\n"
-            "Transform key format:\n"
-            "  ENC[/bits],HASH,AUTH,GROUP\n"
-            "  Example: '7/256,5,1,14' means AES-256, SHA256, PSK, MODP-2048.\n"
+            "Transform format: ENC[/bits],HASH,AUTH,GROUP\n"
+            "Example: '7/256,5,1,14' = AES256 / SHA256 / PSK / MODP2048.\n"
         ),
         formatter_class=SmartFormatter,
         epilog=(
@@ -1180,14 +1174,6 @@ def main() -> int:
             "  AUTH: PSK=1, RSA=3, RSA_SIG=3, RSA-SIG=3, RSA SIG=3, HYBRID=64221, HYBRID_RSA=64221\n"
             "  DH:   G1=1,  G2=2,  G5=5,  G14=14, G15=15, G16=16\n"
             "        MODP768=1, MODP1024=2, MODP1536=5, MODP2048=14, MODP3072=15, MODP4096=16\n\n"
-            "Notes:\n"
-            "  - By default ikess uses a curated set of common, modern, and legacy transforms.\n"
-            "  - --fullalgs switches to an expanded transform set that is larger and slower but thorough.\n"
-            "  - You can add custom lists via --enc/--hash/--auth/--group; these are merged with the curated\n"
-            "    or expanded set unless you also pass --onlycustom to scan only your provided items.\n"
-            "  - For Aggressive Mode, only PSK is tried unless you explicitly include other --auth values.\n\n"
-            "Exit codes:\n"
-            "  0 success, 1 dependency or runtime error, 124 external timeout.\n\n"
             "Examples:\n"
             "  sudo ./ikess.py 10.0.0.1\n"
             "  sudo ./ikess.py 10.0.0.0/24 --fullalgs --fingerprint\n"
@@ -1209,8 +1195,8 @@ def main() -> int:
         "--fullalgs",
         action="store_true",
         help=(
-            "Use the expanded transform sets. Increases coverage and scan time. The expanded sets include\n"
-            "additional DES/3DES, AES bit lengths, multiple DH groups, and RSA/HYBRID combinations."
+            "Try every ENC/HASH/AUTH/DH combination (full cartesian set).\n"
+            "You can still limit via --enc/--hash/--auth/--group. Very noisy."
         ),
     )
     parser.add_argument(
