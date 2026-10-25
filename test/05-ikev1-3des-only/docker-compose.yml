@@ -1,0 +1,21 @@
+services:
+  vpn:
+    build: .
+    image: ikess/test-ikev1-3des-only:latest
+    hostname: ikess-ikev1-3des-only
+    container_name: ikess-ikev1-3des-only
+    environment:
+      VPN_IPSEC_PSK: ${VPN_IPSEC_PSK:-ikess-test-only-change-this-psk-2026}
+      VPN_USER: ${VPN_USER:-vpnuser}
+      VPN_PASSWORD: ${VPN_PASSWORD:-ikess-test-password}
+      VPN_PUBLIC_IP: ${VPN_PUBLIC_IP:-127.0.0.1}
+      VPN_DNS_SRV1: 1.1.1.1
+      VPN_DNS_SRV2: 1.0.0.1
+      VPN_DISABLE_IPSEC_L2TP: "yes"
+    restart: unless-stopped
+    ports:
+      - "500:500/udp"
+      - "4500:4500/udp"
+    privileged: true
+    volumes:
+      - /lib/modules:/lib/modules:ro

@@ -8,8 +8,12 @@ import argparse
 import json
 import logging
 import re
+import socket
+import random
 import subprocess
 import sys
+import tempfile
+import time
 from datetime import datetime
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -17,6 +21,11 @@ from typing import Optional, Dict, List, Tuple, Any
 from itertools import product
 import ipaddress
 from pathlib import Path
+
+try:
+    import fcntl  # POSIX advisory file locks (used for the ike-scan UDP port lock)
+except ImportError:  # non-POSIX platforms - bind-retry still applies
+    fcntl = None
 
 # ----------------------------- Logging ---------------------------------
 logging.basicConfig(
@@ -35,13 +44,39 @@ CUSTOM_AUTH: List[str] = []
 CUSTOM_GROUP: List[str] = []
 ONLYCUSTOM: bool = False
 NATT: bool = False
+# Optional ike-scan --sport override (e.g. 0 = random source port for local testing)
+IKE_SPORT: Optional[int] = None
+# Aggressive Mode group VPN ID (ike-scan --id/--idtype). Some gateways
+# (Cisco ASA tunnel-group, SonicWall, FortiGate dialup, WatchGuard, ...)
+# only negotiate proposals after seeing a known group ID and otherwise
+# answer NO-PROPOSAL-CHOSEN (or stay silent) for every proposal.
+VPN_ID: Optional[str] = None
+VPN_IDTYPE: int = 11  # RFC 2407 ID type: 11 = KEY_ID (group name)
+# Aggressive Mode requires a non-empty initiator ID in the first exchange.
+# Use a neutral FQDN when the caller did not provide a gateway-specific ID.
+DEFAULT_AGGRESSIVE_ID = "ikess-probe.invalid"
+DEFAULT_AGGRESSIVE_IDTYPE = 2  # ID_FQDN
+# Optional wordlist for the Aggressive Mode group VPN ID hunt (--idfile)
+IDFILE: Optional[str] = None
+# Group VPN IDs discovered by the --idfile hunt (ip -> group name)
+DISCOVERED_IDS: Dict[str, str] = {}
+# Pause between group ID hunt probes (seconds) to stay gentle on the peer
+HUNT_PROBE_DELAY: float = 0.05
 # Extra flags prepended to every ike-scan invocation (e.g. --nat-t)
 EXTRA_IKESCAN_ARGS: List[str] = []
+# ike-scan binds a fixed UDP source port (500, or 4500 with --nat-t) and only one
+# process may hold it at a time. Serialize our own calls with an advisory lock and
+# retry when a non-cooperating process (e.g. a manual ike-scan) holds the port -
+# otherwise ike-scan exits with empty output and probes look like false negatives.
+IKE_PORT_BIND_MAX_RETRIES: int = 4
+IKE_PORT_BIND_BASE_DELAY: float = 0.5
+IKE_PORT_LOCK_MAX_WAIT: float = 300.0
+IKE_PORT_BIND_ERR_RE = re.compile(r"(Could not bind network socket to local port|Address already in use)", re.I)
 
 # --------------------------- Vulnerability text ------------------------
 FLAWS = {
     "IKEV1": "Weak IKE version 1 supported - deprecated in favor of IKEv2",
-    "DISC": "The IKE service is discoverable - switch to IKEv2 to prevent",
+    "DISC": "The IKE service is discoverable",
     "ENC_DES": "DES encryption detected - insecure and should be replaced with AES",
     "ENC_3DES": "3DES encryption detected - deprecated and should be replaced with AES",
     "HASH_MD5": "MD5 hash algorithm detected - insecure due to collision vulnerabilities",
@@ -53,7 +88,12 @@ FLAWS = {
     "AGG_MODE": "Aggressive Mode supported - may reveal PSK hash for offline attacks",
     "FING_VID": "Fingerprinting possible via VID payload - informational leak",
     "FING_BACKOFF": "Fingerprinting possible via backoff pattern - informational leak",
-    "IKEV2": "IKEv2 is supported - very good and recommended"
+    "IKEV2": "IKEv2 is supported - very good and recommended",
+    "NATT_VID": "NAT-T advertised on UDP 500 (RFC 3947 VID) - peer switches to UDP 4500 after NAT detection; rerun with --nat-t to cover 4500",
+    "NATT_4500": "IKE service also reachable on UDP 4500 (NAT-T) - additional exposed attack surface; rerun with --nat-t if the 4500 listener should be enumerated separately",
+    "NATT_ONLY": "IKE service answers only on UDP 4500 (NAT-T) - UDP 500 is silent (typical when only 4500 is port-forwarded or the peer is configured for NAT-T only); scan continued over UDP 4500",
+    "NO_PROPOSAL": "Peer responded but rejected every offered proposal - it may require a specific group VPN ID for Aggressive Mode (rerun with --id or --idfile), negotiate IKEv2-only proposals (not enumerable with ike-scan), use transforms outside the tested set (--fullalgs or custom --enc/--hash/--auth/--group), or expose a different policy on UDP 4500 (rerun with --nat-t)",
+    "VPN_ID_FOUND": "Group VPN ID accepted in Aggressive Mode - peer requires this group name before negotiating proposals"
 }
 
 # ============================= MAIN MODE TRANSFORMS =============================
@@ -68,7 +108,7 @@ FLAWS = {
 # Format of each transform string below:
 #   "ENC[/bits],HASH,AUTH,GROUP"
 #     ENC:   1=DES, 5=3DES, 7/128=AES128, 7/192=AES192, 7/256=AES256
-#     HASH:  1=MD5, 2=SHA1, 5=SHA256
+#     HASH:  1=MD5, 2=SHA1, 4=SHA256, 5=SHA384, 6=SHA512
 #     AUTH:  1=PSK, 3=RSA_SIG (cert-based), 64221=HYBRID_RSA
 #     GROUP: 2=MODP1024, 5=MODP1536, 14=MODP2048, 15=MODP3072, 16=MODP4096, 19=ECP256 (elliptic curve)
 #
@@ -81,19 +121,19 @@ MAIN_MODE_TRANSFORMS = [
     # Typical for site-to-site tunnels and many "current but not fancy"
     # vendor templates. DH14 = MODP2048.
     # ------------------------------------------------------------------
-    "7/128,5,1,14",   # AES128-SHA256-PSK-DH14 (MODP2048)
-    "7/256,5,1,14",   # AES256-SHA256-PSK-DH14 (MODP2048)
+    "7/128,4,1,14",   # AES128-SHA256-PSK-DH14 (MODP2048)
+    "7/256,4,1,14",   # AES256-SHA256-PSK-DH14 (MODP2048)
     "7/128,2,1,14",   # AES128-SHA1-PSK-DH14 (MODP2048)
     "7/256,2,1,14",   # AES256-SHA1-PSK-DH14 (MODP2048)
     "7/192,2,1,14",   # AES192-SHA1-PSK-DH14 (MODP2048)
-    "7/192,5,1,14",   # AES192-SHA256-PSK-DH14 (MODP2048)
+    "7/192,4,1,14",   # AES192-SHA256-PSK-DH14 (MODP2048)
 
     # ------------------------------------------------------------------
     # MODERN & COMMON RSA_SIG PROFILES (cert-based auth instead of PSK)
     # RSA_SIG is common for B2B tunnels and "we use certs" deployments.
     # ------------------------------------------------------------------
-    "7/128,5,3,14",   # AES128-SHA256-RSA_SIG-DH14 (MODP2048)
-    "7/256,5,3,14",   # AES256-SHA256-RSA_SIG-DH14 (MODP2048)
+    "7/128,4,3,14",   # AES128-SHA256-RSA_SIG-DH14 (MODP2048)
+    "7/256,4,3,14",   # AES256-SHA256-RSA_SIG-DH14 (MODP2048)
     "7/128,2,3,14",   # AES128-SHA1-RSA_SIG-DH14 (MODP2048)
     "7/256,2,3,14",   # AES256-SHA1-RSA_SIG-DH14 (MODP2048)
 
@@ -113,11 +153,11 @@ MAIN_MODE_TRANSFORMS = [
     # ------------------------------------------------------------------
     "7/128,2,1,2",    # AES128-SHA1-PSK-DH2  (MODP1024)
     "7/256,2,1,2",    # AES256-SHA1-PSK-DH2  (MODP1024)
-    "7/128,5,1,2",    # AES128-SHA256-PSK-DH2 (MODP1024)
-    "7/256,5,1,2",    # AES256-SHA256-PSK-DH2 (MODP1024)
+    "7/128,4,1,2",    # AES128-SHA256-PSK-DH2 (MODP1024)
+    "7/256,4,1,2",    # AES256-SHA256-PSK-DH2 (MODP1024)
 
-    "7/128,5,1,5",    # AES128-SHA256-PSK-DH5 (MODP1536)
-    "7/256,5,1,5",    # AES256-SHA256-PSK-DH5 (MODP1536)
+    "7/128,4,1,5",    # AES128-SHA256-PSK-DH5 (MODP1536)
+    "7/256,4,1,5",    # AES256-SHA256-PSK-DH5 (MODP1536)
     "7/128,2,1,5",    # AES128-SHA1-PSK-DH5   (MODP1536)
     "7/256,2,1,5",    # AES256-SHA1-PSK-DH5   (MODP1536)
 
@@ -126,18 +166,18 @@ MAIN_MODE_TRANSFORMS = [
     # These are the "paranoid / we bumped DH to 4096" style configs.
     # DH16 = MODP4096.
     # ------------------------------------------------------------------
-    "7/128,5,1,16",   # AES128-SHA256-PSK-DH16 (MODP4096)
-    "7/256,5,1,16",   # AES256-SHA256-PSK-DH16 (MODP4096)
-    "7/128,5,3,16",   # AES128-SHA256-RSA_SIG-DH16 (MODP4096)
-    "7/256,5,3,16",   # AES256-SHA256-RSA_SIG-DH16 (MODP4096)
+    "7/128,4,1,16",   # AES128-SHA256-PSK-DH16 (MODP4096)
+    "7/256,4,1,16",   # AES256-SHA256-PSK-DH16 (MODP4096)
+    "7/128,4,3,16",   # AES128-SHA256-RSA_SIG-DH16 (MODP4096)
+    "7/256,4,3,16",   # AES256-SHA256-RSA_SIG-DH16 (MODP4096)
 
     # ------------------------------------------------------------------
     # ELLIPTIC CURVE DH GROUPS (ECP256 etc.)
     # Some vendors advertise IKEv2/ECP but will still answer in IKEv1.
     # Group 19 is typically ECP256.
     # ------------------------------------------------------------------
-    "7/128,5,1,19",   # AES128-SHA256-PSK-ECP256 (DH19)
-    "7/256,5,1,19",   # AES256-SHA256-PSK-ECP256 (DH19)
+    "7/128,4,1,19",   # AES128-SHA256-PSK-ECP256 (DH19)
+    "7/256,4,1,19",   # AES256-SHA256-PSK-ECP256 (DH19)
 
     # ------------------------------------------------------------------
     # WEAK HASH (MD5) WITH PSK
@@ -180,8 +220,8 @@ AGGRESSIVE_MODE_TRANSFORMS = [
     # MODERN(ish) PSK WITH DH14 (MODP2048)
     # This is what you'd hope to see in a semi-updated environment.
     # ------------------------------------------------------------------
-    "7/128,5,1,14",   # AES128-SHA256-PSK-DH14 (MODP2048)
-    "7/256,5,1,14",   # AES256-SHA256-PSK-DH14 (MODP2048)
+    "7/128,4,1,14",   # AES128-SHA256-PSK-DH14 (MODP2048)
+    "7/256,4,1,14",   # AES256-SHA256-PSK-DH14 (MODP2048)
     "7/128,2,1,14",   # AES128-SHA1-PSK-DH14  (MODP2048)
     "7/256,2,1,14",   # AES256-SHA1-PSK-DH14  (MODP2048)
 
@@ -192,8 +232,8 @@ AGGRESSIVE_MODE_TRANSFORMS = [
     # ------------------------------------------------------------------
     "7/128,2,1,2",    # AES128-SHA1-PSK-DH2  (MODP1024)
     "7/256,2,1,2",    # AES256-SHA1-PSK-DH2  (MODP1024)
-    "7/128,5,1,5",    # AES128-SHA256-PSK-DH5 (MODP1536)
-    "7/256,5,1,5",    # AES256-SHA256-PSK-DH5 (MODP1536)
+    "7/128,4,1,5",    # AES128-SHA256-PSK-DH5 (MODP1536)
+    "7/256,4,1,5",    # AES256-SHA256-PSK-DH5 (MODP1536)
     "7/128,2,1,5",    # AES128-SHA1-PSK-DH5   (MODP1536)
 
     # ------------------------------------------------------------------
@@ -201,8 +241,8 @@ AGGRESSIVE_MODE_TRANSFORMS = [
     # Some orgs crank DH size but still keep PSK.
     # DH16 = MODP4096.
     # ------------------------------------------------------------------
-    "7/128,5,1,16",   # AES128-SHA256-PSK-DH16 (MODP4096)
-    "7/256,5,1,16",   # AES256-SHA256-PSK-DH16 (MODP4096)
+    "7/128,4,1,16",   # AES128-SHA256-PSK-DH16 (MODP4096)
+    "7/256,4,1,16",   # AES256-SHA256-PSK-DH16 (MODP4096)
 
     # ------------------------------------------------------------------
     # 3DES / DES LEGACY PSK
@@ -261,18 +301,120 @@ def _implementation_sources(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
     primary = backoff or vid_choice or "N/A"
     return {"backoff": backoff, "vid": vid_choice, "primary": primary}
 
+def _ike_source_port(cmd: List[str]) -> int:
+    """Best-effort UDP source port ike-scan will bind for this invocation (0 = random/ephemeral)."""
+    for i, arg in enumerate(cmd):
+        if arg == "--sport" and i + 1 < len(cmd):
+            try:
+                return int(cmd[i + 1])
+            except ValueError:
+                return 0
+        if arg.startswith("--sport="):
+            try:
+                return int(arg.split("=", 1)[1])
+            except ValueError:
+                return 0
+    if "--nat-t" in cmd:
+        return 4500
+    return 500
+
+def _acquire_ike_port_lock(port: int):
+    """
+    Advisory cross-process lock (flock) so concurrent ikess instances serialize their
+    ike-scan calls instead of racing for the fixed UDP source port. Returns an open
+    file handle that owns the lock, or None when locking is unavailable - the
+    bind-retry in run_command still guards correctness in that case.
+    """
+    if fcntl is None or not port:
+        return None
+    lock_path = Path(tempfile.gettempdir()) / f"ikess_ikescan_udp{port}.lock"
+    try:
+        fh = open(lock_path, "w")
+    except OSError as e:
+        logger.debug(f"Cannot open ike-scan port lock {lock_path}: {e}")
+        return None
+    deadline = time.monotonic() + IKE_PORT_LOCK_MAX_WAIT
+    announced = False
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            if time.monotonic() >= deadline:
+                logger.warning(f"UDP {port} port lock stayed busy for {IKE_PORT_LOCK_MAX_WAIT:.0f}s - proceeding without lock")
+                fh.close()
+                return None
+            if not announced:
+                logger.info(f"UDP {port} in use by another ikess process - waiting for the port lock")
+                announced = True
+            time.sleep(0.25)
+
+def _is_local_ike_target(cmd: List[str]) -> bool:
+    """True when the ike-scan target is this machine (local test server scenario)."""
+    if not cmd:
+        return False
+    try:
+        target_ip = socket.gethostbyname(cmd[-1])
+    except OSError:
+        return False
+    try:
+        if ipaddress.ip_address(target_ip).is_loopback:
+            return True
+    except ValueError:
+        return False
+    try:
+        local_addrs = set(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        return False
+    return target_ip in local_addrs
+
 def run_command(cmd: List[str], timeout: int = 30) -> Tuple[str, str, int]:
     if cmd and cmd[0] == "ike-scan" and EXTRA_IKESCAN_ARGS:
         cmd = [cmd[0]] + EXTRA_IKESCAN_ARGS + cmd[1:]
+        # ike-scan: --sport/--dport only override the NAT-T defaults (4500/4500)
+        # when given AFTER --nat-t - keep the order valid no matter who added what.
+        if "--nat-t" in cmd:
+            sport_args = [a for a in cmd if a.startswith("--sport=")]
+            if sport_args and cmd.index("--nat-t") > min(cmd.index(a) for a in sport_args):
+                cmd = [a for a in cmd if not a.startswith("--sport=")]
+                nat_idx = cmd.index("--nat-t")
+                cmd = cmd[:nat_idx + 1] + sport_args + cmd[nat_idx + 1:]
+    is_ike = bool(cmd) and cmd[0] == "ike-scan"
+    lock_fh = _acquire_ike_port_lock(_ike_source_port(cmd)) if is_ike else None
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return (p.stdout.strip(), p.stderr.strip(), p.returncode)
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Command timed out: {' '.join(cmd)}")
-        return ("", "Timeout expired", 124)
-    except Exception as e:
-        logger.error(f"Command failed: {' '.join(cmd)} - {str(e)}")
-        return ("", str(e), 1)
+        attempts = IKE_PORT_BIND_MAX_RETRIES if is_ike else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                out, err, rc = p.stdout.strip(), p.stderr.strip(), p.returncode
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Command timed out: {' '.join(cmd)}")
+                return ("", "Timeout expired", 124)
+            except Exception as e:
+                logger.error(f"Command failed: {' '.join(cmd)} - {str(e)}")
+                return ("", str(e), 1)
+            if is_ike and IKE_PORT_BIND_ERR_RE.search(err):
+                if attempt < attempts:
+                    delay = IKE_PORT_BIND_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0.05, 0.25)
+                    logger.warning(
+                        f"ike-scan could not bind its UDP source port (in use by another process) - "
+                        f"retry {attempt}/{attempts - 1} in {delay:.1f}s: {' '.join(cmd[:6])}"
+                    )
+                    time.sleep(delay)
+                    continue
+                hint = ""
+                if _is_local_ike_target(cmd):
+                    hint = " - target is local: your IKE daemon owns UDP 500/4500, rerun with --sport 0"
+                logger.error(
+                    f"ike-scan source port stayed busy after {attempts} attempts - this probe may be a "
+                    f"false negative (peer appears silent){hint}: {' '.join(cmd[:6])}"
+                )
+            return (out, err, rc)
+        return ("", "ike-scan source port unavailable", 1)  # defensive; loop always returns
+    finally:
+        if lock_fh is not None:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            lock_fh.close()
 
 def check_ike_dependency() -> bool:
     out, _, rc = run_command(["which", "ike-scan"], timeout=5)
@@ -289,7 +431,13 @@ ENC_ALIASES = {
     "AES192": "7/192", "AES-192": "7/192", "AES 192": "7/192",
     "AES256": "7/256", "AES-256": "7/256", "AES 256": "7/256",
 }
-HASH_ALIASES = {"MD5": "1", "SHA1": "2", "SHA-1": "2", "SHA 1": "2", "SHA256": "5", "SHA-256": "5", "SHA 256": "5"}
+HASH_ALIASES = {
+    "MD5": "1",
+    "SHA1": "2", "SHA-1": "2", "SHA 1": "2",
+    "SHA256": "4", "SHA-256": "4", "SHA 256": "4",
+    "SHA384": "5", "SHA-384": "5", "SHA 384": "5",
+    "SHA512": "6", "SHA-512": "6", "SHA 512": "6",
+}
 AUTH_ALIASES = {"PSK": "1", "RSA": "3", "RSA_SIG": "3", "RSA-SIG": "3", "RSA SIG": "3", "HYBRID": "64221", "HYBRID_RSA": "64221"}
 GROUP_ALIASES = {
     "G1": "1", "MODP768": "1", "MODP 768": "1", "MODP-768": "1",
@@ -349,7 +497,31 @@ def _parse_vids(handshake: str) -> List[str]:
     return vids
 
 def _parse_sa_block(handshake: str) -> List[str]:
-    return re.findall(r"SA=\(([^)]+)\)", handshake)
+    blocks: List[str] = []
+    marker = "SA=("
+    search_from = 0
+    while (start := handshake.find(marker, search_from)) != -1:
+        content_start = start + len(marker)
+        depth = 1
+        for pos in range(content_start, len(handshake)):
+            char = handshake[pos]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    blocks.append(handshake[content_start:pos])
+                    search_from = pos + 1
+                    break
+        else:
+            break
+    return blocks
+
+NATT_VID_RE = re.compile(r"VID=[a-fA-F0-9]+\s+\(([^)]*(?:RFC\s*3947|nat-t-ike)[^)]*)\)", re.I)
+
+def _parse_natt_vids(handshake: str) -> List[str]:
+    """NAT-T VIDs (RFC 3947 / draft-ietf-ipsec-nat-t-ike-*) advertised by the peer."""
+    return list(dict.fromkeys(m.group(1).strip() for m in NATT_VID_RE.finditer(handshake)))
 
 # --------------------------- Scanning steps ------------------------------
 def check_ikev1(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
@@ -362,6 +534,9 @@ def check_ikev1(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     if positive:
         vpns[ip]["v1"] = True
         vpns[ip]["ikev1_raw_handshake"] = out.strip()
+        natt_vids = _parse_natt_vids(out)
+        if natt_vids:
+            vpns[ip]["natt_vid"] = natt_vids
         vids = _parse_vids(_strip_banner(out))
         for v in vids:
             vpns[ip].setdefault("vid", []).append(v)
@@ -376,6 +551,182 @@ def check_ikev2(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     if positive:
         vpns[ip]["v2"] = True
         vpns[ip]["ikev2_raw_handshake"] = out.strip()
+
+def check_ikev1_aggressive(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """Discover an Aggressive-Mode-only IKEv1 peer, optionally using --id."""
+    if vpns[ip].get("v1"):
+        return
+    identity = f" with --id '{VPN_ID}'" if VPN_ID else ""
+    logger.info(f"Main Mode was silent for {ip} - trying IKEv1 Aggressive Mode{identity}")
+    _, transforms_aggr = _transform_sets()
+    for transform in transforms_aggr:
+        out = _try_transform(ip, transform, aggressive=True)
+        if not out:
+            continue
+        if _has_positive_summary(out) or _has_body_markers(out, BODY_MARKERS_V1):
+            vpns[ip]["v1"] = True
+            vpns[ip]["ikev1_raw_handshake"] = out.strip()
+            vids = _parse_vids(out)
+            for vid in vids:
+                if vid not in vpns[ip].setdefault("vid", []):
+                    vpns[ip]["vid"].append(vid)
+            return
+
+def probe_natt_port(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """
+    When scanning UDP 500 (no --nat-t), check whether the peer also answers on UDP 4500.
+    Gateways that advertise NAT-T VIDs on 500 typically move to 4500 after NAT detection.
+    """
+    if NATT:
+        return  # every call already runs on 4500
+    logger.info(f"Probing NAT-T (UDP 4500) for {ip}")
+    probe: Dict[str, Any] = {"v1": False, "v2": False}
+    # run_command only injects EXTRA_IKESCAN_ARGS when NATT is set, so pass --nat-t explicitly
+    out, _, _ = run_command(["ike-scan", "--nat-t", ip], timeout=10)
+    if out and (_has_positive_summary(out) or _has_body_markers(out, BODY_MARKERS_V1)):
+        probe["v1"] = True
+        probe["ikev1_raw"] = out.strip()
+    if vpns[ip].get("v2"):
+        out2, _, _ = run_command(["ike-scan", "--nat-t", "--ikev2", ip], timeout=10)
+        if out2 and (_has_positive_summary(out2) or _has_body_markers(_strip_banner(out2), BODY_MARKERS_V2)):
+            probe["v2"] = True
+            probe["ikev2_raw"] = out2.strip()
+    vpns[ip]["natt_4500"] = probe
+
+def discover_over_natt(vpns: Dict[str, Dict[str, Any]], ip: str) -> bool:
+    """
+    UDP 500 was silent: check whether the peer is a NAT-T-only responder on UDP 4500
+    (typical when only 4500 is port-forwarded, or the gateway is NAT-T only).
+    Returns True when IKE was discovered on 4500; the caller then continues the scan
+    for this host over NAT-T.
+
+    This is a transport fallback only. When UDP 500 answers (even with
+    NO-PROPOSAL-CHOSEN) the transport works and a 4500 rescan would just repeat
+    the same policy rejection - that case is reported, not re-probed.
+    """
+    if NATT:
+        return False  # every call already runs on 4500
+    logger.info(f"No IKE response on UDP 500 for {ip} - probing NAT-T (UDP 4500)")
+    probe: Dict[str, Any] = {"v1": False, "v2": False}
+    out, _, _ = run_command(["ike-scan", "--nat-t", ip], timeout=10)
+    if out and (_has_positive_summary(out) or _has_body_markers(out, BODY_MARKERS_V1)):
+        probe["v1"] = True
+        probe["ikev1_raw"] = out.strip()
+        vpns[ip]["v1"] = True
+        vpns[ip]["ikev1_raw_handshake"] = out.strip()
+    out2, _, _ = run_command(["ike-scan", "--nat-t", "--ikev2", ip], timeout=10)
+    if out2 and (_has_positive_summary(out2) or _has_body_markers(_strip_banner(out2), BODY_MARKERS_V2)):
+        probe["v2"] = True
+        probe["ikev2_raw"] = out2.strip()
+        vpns[ip]["v2"] = True
+        vpns[ip]["ikev2_raw_handshake"] = out2.strip()
+    vpns[ip]["natt_4500"] = probe
+    if probe["v1"] or probe["v2"]:
+        logger.info(f"IKE discovered on UDP 4500 (NAT-T) for {ip}")
+        return True
+    return False
+
+# ------------------- Aggressive Mode group VPN ID hunt -------------------
+# Compact PSK proposal space for the --idfile hunt, grouped per DH group so
+# the aggressive-mode KE payload (--dhgroup) always matches the SA proposals.
+HUNT_TRANSFORMS = [
+    # DH group 2 (MODP-1024)
+    "7/256,2,1,2", "7/256,4,1,2", "7/128,2,1,2", "7/128,4,1,2", "7/192,2,1,2",
+    "5,2,1,2", "5,1,1,2", "1,2,1,2", "1,1,1,2", "7/128,1,1,2",
+    # DH group 14 (MODP-2048)
+    "7/256,2,1,14", "7/256,4,1,14", "7/128,2,1,14", "7/128,4,1,14",
+    "7/192,2,1,14", "5,2,1,14", "1,2,1,14",
+    # DH group 5 (MODP-1536)
+    "7/256,2,1,5", "7/128,2,1,5", "5,2,1,5", "7/128,4,1,5",
+    # DH group 16 (MODP-4096)
+    "7/256,2,1,16", "7/128,2,1,16", "7/256,4,1,16",
+]
+
+def _aggressive_hunt_bundles(max_per_packet: int = 16) -> List[Tuple[str, List[str]]]:
+    """Chunk HUNT_TRANSFORMS into (dhgroup, transforms) bundles for one-packet probes."""
+    by_dh: Dict[str, List[str]] = {}
+    for t in HUNT_TRANSFORMS:
+        by_dh.setdefault(t.rsplit(",", 1)[1], []).append(t)
+    bundles: List[Tuple[str, List[str]]] = []
+    for dh, items in by_dh.items():
+        for i in range(0, len(items), max_per_packet):
+            bundles.append((dh, items[i:i + max_per_packet]))
+    return bundles
+
+def _load_id_wordlist(path: str) -> List[str]:
+    """Load group VPN ID candidates: one per line, '#' starts a comment."""
+    names: List[str] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for ln in f:
+            ln = ln.strip()
+            if ln and not ln.startswith("#"):
+                names.append(ln)
+    return list(dict.fromkeys(names))
+
+def _hunt_group_ids_once(vpns: Dict[str, Dict[str, Any]], ip: str, names: List[str]) -> Optional[Dict[str, Any]]:
+    """
+    Try every candidate group VPN ID in Aggressive Mode (bundled PSK proposals per DH group).
+    Returns evidence on a handshake hit; records notify anomalies in vpns[ip].
+    """
+    bundles = _aggressive_hunt_bundles()
+    anomalies: Dict[str, str] = {}
+    silent = 0
+    total = len(names)
+    for i, name in enumerate(names, 1):
+        progress = (i / total) * 100
+        print(f"\r[{'█' * int(progress / 100 * 30):30}] {progress:.1f}% - Aggressive Mode Group ID: {name.ljust(24)}", end="", flush=True)
+        for dh, bundle in bundles:
+            cmd = ["ike-scan", "--aggressive", "--id", name, "--idtype", str(VPN_IDTYPE)]
+            for t in bundle:
+                cmd += ["--trans", t]
+            cmd += ["--dhgroup", dh, "--timeout=500", "--retry=1", ip]
+            out, _, _ = run_command(cmd, timeout=10)
+            body = _strip_banner(out)
+            if "Handshake returned" in body:
+                print()
+                sa_blocks = _parse_sa_block(body)
+                return {"id": name, "raw": out.strip(), "sa": "; ".join(sa_blocks) if sa_blocks else "n/a"}
+            if not body:
+                silent += 1
+            else:
+                upper = body.upper()
+                if "NO-PROPOSAL" not in upper and "NO_PROPOSAL" not in upper:
+                    anomalies.setdefault(name, body.strip().splitlines()[0][:160])
+            time.sleep(HUNT_PROBE_DELAY)
+    print()
+    if anomalies:
+        vpns[ip]["vpn_id_anomalies"] = anomalies
+        for name, snip in list(anomalies.items())[:5]:
+            logger.info(f"Group ID '{name}' produced a different notify: {snip}")
+    if silent:
+        vpns[ip]["vpn_id_silent_probes"] = silent
+    return None
+
+def hunt_group_id(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    """
+    Brute force group VPN IDs from --idfile in Aggressive Mode. Some gateways only
+    negotiate after seeing a known group name and answer NO-PROPOSAL-CHOSEN otherwise.
+    On a hit the ID is adopted (per host) for all further aggressive-mode probes.
+    """
+    try:
+        names = _load_id_wordlist(IDFILE)
+    except OSError as e:
+        logger.error(f"Cannot read --idfile: {e}")
+        return
+    if not names:
+        logger.warning(f"--idfile {IDFILE} contains no group VPN ID candidates")
+        return
+    logger.info(f"Brute-forcing {len(names)} group VPN IDs (Aggressive Mode, idtype {VPN_IDTYPE}) for {ip}")
+    hit = _hunt_group_ids_once(vpns, ip, names)
+    if hit:
+        vpns[ip]["v1"] = True
+        vpns[ip]["vpn_id_discovered"] = hit["id"]
+        vpns[ip]["vpn_id_evidence"] = hit["raw"]
+        vpns[ip]["vpn_id_sa"] = hit["sa"]
+        DISCOVERED_IDS[ip] = hit["id"]
+        logger.info(f"Group VPN ID found for {ip}: '{hit['id']}' (accepted SA: {hit['sa']})")
+    else:
+        logger.info(f"No group VPN ID from {IDFILE} was accepted by {ip}")
 
 def fingerprint_backoff(vpns: Dict[str, Dict[str, Any]], ip: str, transform: Optional[str] = None, timeout: int = 300) -> None:
     logger.info(f"Fingerprinting {ip} via backoff analysis{' with transform ' + transform if transform else ''}")
@@ -406,11 +757,31 @@ def fingerprint_backoff(vpns: Dict[str, Dict[str, Any]], ip: str, transform: Opt
     else:
         logger.info(f"No definitive backoff fingerprint for {ip}")
 
+# DH groups ike-scan can express for the aggressive-mode KE payload size (--dhgroup, MODP only)
+IKE_DHGROUP_SUPPORTED = {1, 2, 5, 14, 15, 16, 17, 18}
+
 def _try_transform(ip: str, transform: str, aggressive: bool = False) -> str:
     base = ["ike-scan"]
     if aggressive:
         base += ["--aggressive"]
-    base += ["--trans", transform, ip]
+        # Some gateways (Cisco ASA, SonicWall, FortiGate, WatchGuard, ...) only
+        # negotiate after seeing a known group VPN ID; without it they reply
+        # NO-PROPOSAL-CHOSEN (or stay silent) for every proposal.
+        eff_id = VPN_ID or DISCOVERED_IDS.get(ip)
+        if eff_id:
+            base += ["--id", eff_id, "--idtype", str(VPN_IDTYPE)]
+        else:
+            base += ["--id", DEFAULT_AGGRESSIVE_ID, "--idtype", str(DEFAULT_AGGRESSIVE_IDTYPE)]
+    base += ["--trans", transform]
+    if aggressive:
+        # ike-scan sizes the aggressive-mode KE payload from --dhgroup (default 2),
+        # NOT from --trans. Keep them in sync so the peer does not reject on a
+        # KE/group mismatch. ECP groups (19/20/21) cannot be expressed with
+        # --dhgroup (ike-scan limitation, MODP only).
+        parts = [p.strip() for p in transform.split(",")]
+        if len(parts) == 4 and parts[3].isdigit() and int(parts[3]) in IKE_DHGROUP_SUPPORTED:
+            base += ["--dhgroup", parts[3]]
+    base.append(ip)
     out, _, _ = run_command(base, timeout=10)
     return _strip_banner(out)
 
@@ -495,6 +866,10 @@ def _transform_sets() -> Tuple[List[str], List[str]]:
     return (list(MAIN_MODE_TRANSFORMS), list(AGGRESSIVE_MODE_TRANSFORMS))
 
 def test_transforms(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
+    if not vpns[ip].get("v1"):
+        # ike-scan 1.9.x supports only its fixed default IKEv2 proposal;
+        # --trans enumerates IKEv1 Main Mode proposals only.
+        return
     logger.info(f"Testing encryption algorithms for {ip}")
     transforms_main, _ = _transform_sets()
     accepted_sa, accepted_keys = [], []
@@ -553,7 +928,7 @@ def test_ikev2_features(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
 
 # --------------------------- Analysis / Reports --------------------------
 _TRANS_ENC = {"1": "DES", "5": "3DES", "7/128": "AES-128", "7/192": "AES-192", "7/256": "AES-256"}
-_TRANS_HASH = {"1": "MD5", "2": "SHA1", "5": "SHA256"}
+_TRANS_HASH = {"1": "MD5", "2": "SHA1", "4": "SHA256", "5": "SHA384", "6": "SHA512"}
 _TRANS_AUTH = {"1": "PSK", "3": "RSA_SIG", "64221": "HYBRID_RSA"}
 _TRANS_DH   = {"1": "DH Group 1 (MODP-768)", "2": "DH Group 2 (MODP-1024)", "5": "DH Group 5 (MODP-1536)",
               "14": "DH Group 14 (MODP-2048)", "15": "DH Group 15 (MODP-3072)", "16": "DH Group 16 (MODP-4096)"}
@@ -570,7 +945,7 @@ def _decode_transform_key(key: str) -> List[str]:
         weak.append(_TRANS_HASH[hsh])
     if auth == "1":
         weak.append("PSK")
-    if dh in _TRANS_DH and any(x in _TRANS_DH[dh] for x in {"1", "2", "5"}):
+    if dh in {"1", "2", "5"}:
         weak.append(_TRANS_DH[dh])
     return weak
 
@@ -602,6 +977,21 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         if data.get("ikev2_raw_handshake"):
             results["services"][ip]["proof"]["ikev2_discovery"] = data["ikev2_raw_handshake"]
 
+        # === Add NAT-T (UDP 4500) proof ===
+        natt_probe = data.get("natt_4500") or {}
+        if natt_probe.get("ikev1_raw"):
+            results["services"][ip]["proof"]["natt_4500_ikev1"] = natt_probe["ikev1_raw"]
+        if natt_probe.get("ikev2_raw"):
+            results["services"][ip]["proof"]["natt_4500_ikev2"] = natt_probe["ikev2_raw"]
+        if data.get("vpn_id_evidence"):
+            results["services"][ip]["proof"]["group_id_evidence"] = data["vpn_id_evidence"]
+        results["services"][ip]["meta"]["natt"] = {
+            "vid_advertised": data.get("natt_vid", []),
+            "responds_on_4500": bool(natt_probe.get("v1") or natt_probe.get("v2")),
+            "transforms_tested_on_4500": bool(data.get("natt_only")) or NATT,
+        }
+        results["services"][ip]["meta"]["vpn_id"] = data.get("vpn_id_discovered")
+
         added = set()
 
         def add_finding(desc: str, sev: str, payload: str = "") -> None:
@@ -619,6 +1009,24 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             add_finding(FLAWS["AGG_MODE"], "critical")
         if data.get("v2"):
             add_finding(FLAWS["IKEV2"], "good")
+        if data.get("natt_vid") and not NATT:
+            add_finding(FLAWS["NATT_VID"], "info", "; ".join(data["natt_vid"]))
+        if data.get("natt_only"):
+            add_finding(FLAWS["NATT_ONLY"], "info")
+        elif natt_probe.get("v1") or natt_probe.get("v2"):
+            add_finding(FLAWS["NATT_4500"], "info")
+        got_transforms = bool(
+            data.get("accepted_transform_keys_main")
+            or data.get("accepted_transform_keys_aggr")
+            or data.get("transforms")
+            or data.get("aggressive")
+        )
+        # The transform enumerator is IKEv1-only. An empty transform list for an
+        # IKEv2-only peer is expected and does not mean its proposal was rejected.
+        if data.get("v1") and not got_transforms:
+            add_finding(FLAWS["NO_PROPOSAL"], "info")
+        if data.get("vpn_id_discovered"):
+            add_finding(f"{FLAWS['VPN_ID_FOUND']}: '{data['vpn_id_discovered']}'", "medium")
 
         all_keys = data.get("accepted_transform_keys_main", []) + data.get("accepted_transform_keys_aggr", [])
         decoded_weak = set()
@@ -695,6 +1103,9 @@ def generate_html_report(results: Dict, filename: str):
         scope_badge += ' <span class="badge text-bg-warning">Transport: NAT-T (UDP 4500)</span>'
     else:
         scope_badge += ' <span class="badge text-bg-light">Transport: UDP 500</span>'
+    vpn_id = results.get("scan_info", {}).get("vpn_id")
+    if vpn_id:
+        scope_badge += f' <span class="badge text-bg-dark">Aggr. Group ID: {vpn_id}</span>'
 
     host_cards = []
 
@@ -719,6 +1130,15 @@ def generate_html_report(results: Dict, filename: str):
             f"<li><code class='text-wrap'>{sa}</code></li>"
             for sa in svc["accepted_transforms"]["aggressive"]
         ) or "<li><span class='text-muted'>None</span></li>"
+        ikev2_transform_note = ""
+        if "IKEv2" in svc["meta"]["versions"]:
+            ikev2_transform_note = (
+                "<div class='alert alert-secondary py-2 mb-3' role='note'>"
+                "<strong>IKEv2 transforms:</strong> not enumerated. "
+                "ike-scan 1.9.x can detect IKEv2 using its fixed default proposal, "
+                "but does not support custom IKEv2 transform enumeration."
+                "</div>"
+            )
 
         weak_list = "".join(f"<li>{w}</li>" for w in svc["weak_algorithms"]) or "<li><span class='text-muted'>None detected</span></li>"
 
@@ -775,18 +1195,19 @@ def generate_html_report(results: Dict, filename: str):
               <div class="col-12 col-xl-6">
                 <div class="card p-3 h-100">
                   <h5 class="mb-3">Accepted transforms</h5>
+                                    {ikev2_transform_note}
                   <div class="table-responsive">
                     <table class="table table-sm table-striped align-middle">
                       <thead>
-                        <tr><th style="width:180px">Mode</th><th>SA Transforms</th></tr>
+                                                <tr><th style="width:180px">Protocol / Mode</th><th>SA Transforms</th></tr>
                       </thead>
                       <tbody>
                         <tr>
-                          <td class="fw-semibold">Main Mode</td>
+                                                    <td class="fw-semibold">IKEv1 Main Mode</td>
                           <td><ul class="mb-0">{main_rows}</ul></td>
                         </tr>
                         <tr>
-                          <td class="fw-semibold">Aggressive Mode</td>
+                                                    <td class="fw-semibold">IKEv1 Aggressive Mode</td>
                           <td><ul class="mb-0">{aggr_rows}</ul></td>
                         </tr>
                       </tbody>
@@ -1030,6 +1451,12 @@ def generate_xml_report(results: Dict[str, Any], filename: str) -> None:
             ET.SubElement(proof_el, "ikev1_raw").text = svc["proof"]["ikev1_discovery"]
         if "ikev2_discovery" in svc.get("proof", {}):
             ET.SubElement(proof_el, "ikev2_raw").text = svc["proof"]["ikev2_discovery"]
+        if "natt_4500_ikev1" in svc.get("proof", {}):
+            ET.SubElement(proof_el, "natt_4500_ikev1_raw").text = svc["proof"]["natt_4500_ikev1"]
+        if "natt_4500_ikev2" in svc.get("proof", {}):
+            ET.SubElement(proof_el, "natt_4500_ikev2_raw").text = svc["proof"]["natt_4500_ikev2"]
+        if "group_id_evidence" in svc.get("proof", {}):
+            ET.SubElement(proof_el, "group_id_evidence_raw").text = svc["proof"]["group_id_evidence"]
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ", level=0)
@@ -1068,13 +1495,15 @@ def print_console_report(results: Dict[str, Any]) -> None:
                 for it in items:
                     logger.info(f"    - {it['description']}")
         if svc["accepted_transforms"]["main"] or svc["accepted_transforms"]["aggressive"]:
-            logger.info("  Accepted transforms:")
+            logger.info("  Accepted IKEv1 transforms:")
             if svc["accepted_transforms"]["main"]:
                 for t in svc["accepted_transforms"]["main"]:
-                    logger.info(f"    - Main: {t}")
+                    logger.info(f"    - IKEv1 Main Mode: {t}")
             if svc["accepted_transforms"]["aggressive"]:
                 for t in svc["accepted_transforms"]["aggressive"]:
-                    logger.info(f"    - Aggressive: {t}")
+                    logger.info(f"    - IKEv1 Aggressive Mode: {t}")
+        if "IKEv2" in svc["meta"]["versions"]:
+            logger.info("  IKEv2 transforms: not enumerable with ike-scan 1.9.x (fixed default proposal only)")
         logger.info("")
 
 def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time: str) -> None:
@@ -1087,6 +1516,10 @@ def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time:
         "confirmed_only": ONLYCUSTOM,
         "nat_t": NATT,
         "udp_port": 4500 if NATT else 500,
+        "udp_sport": IKE_SPORT if IKE_SPORT is not None else "",
+        "vpn_id": VPN_ID or "",
+        "vpn_idtype": VPN_IDTYPE,
+        "idfile": IDFILE or "",
     }
 
     # ensure subfolder exists
@@ -1130,14 +1563,40 @@ def scan_target(ip: str) -> Dict[str, Any]:
 
     check_ikev1(vpn, ip)
     check_ikev2(vpn, ip)
+    if not vpn[ip].get("v1"):
+        check_ikev1_aggressive(vpn, ip)
+    if not vpn[ip].get("v1") and not vpn[ip].get("v2") and IDFILE and not VPN_ID:
+        # An Aggressive-Mode-only gateway may stay silent until the correct
+        # group KEY_ID is sent, so let the hunt double as IKEv1 discovery.
+        hunt_group_id(vpn, ip)
 
+    natt_only = False
     if not vpn[ip].get("v1") and not vpn[ip].get("v2"):
-        logger.warning(f"No IKE services found on {ip}")
-        return vpn
+        # UDP 500 silent: maybe a NAT-T-only responder on 4500 (only 4500 forwarded,
+        # or NAT-T-only config). Continue over NAT-T when 4500 answers.
+        natt_only = discover_over_natt(vpn, ip)
+        if not natt_only:
+            logger.warning(f"No IKE services found on {ip}")
+            return vpn
+        vpn[ip]["natt_only"] = True
+    else:
+        # UDP 500 answered: the transport works. Only probe 4500 for the info
+        # finding - a policy rejection on 500 (NO-PROPOSAL-CHOSEN, missing group
+        # VPN ID, ...) would repeat identically on 4500, so the enumeration is
+        # not duplicated over NAT-T.
+        probe_natt_port(vpn, ip)
 
-    test_aggressive_mode(vpn, ip)
-    test_ikev2_features(vpn, ip)
-    test_transforms(vpn, ip)
+    if natt_only and not NATT:
+        EXTRA_IKESCAN_ARGS.append("--nat-t")
+    try:
+        if IDFILE and not VPN_ID and not vpn[ip].get("vpn_id_discovered"):
+            hunt_group_id(vpn, ip)
+        test_aggressive_mode(vpn, ip)
+        test_ikev2_features(vpn, ip)
+        test_transforms(vpn, ip)
+    finally:
+        if natt_only and not NATT:
+            EXTRA_IKESCAN_ARGS.remove("--nat-t")
 
     if FINGERPRINT:
         fingerprint_backoff(vpn, ip)
@@ -1156,7 +1615,7 @@ def scan_target(ip: str) -> Dict[str, Any]:
     return vpn
 
 def main() -> int:
-    global FULLALGS, FINGERPRINT, CUSTOM_ENC, CUSTOM_HASH, CUSTOM_AUTH, CUSTOM_GROUP, ONLYCUSTOM, NATT
+    global FULLALGS, FINGERPRINT, CUSTOM_ENC, CUSTOM_HASH, CUSTOM_AUTH, CUSTOM_GROUP, ONLYCUSTOM, NATT, VPN_ID, VPN_IDTYPE, IDFILE, IKE_SPORT
 
     class SmartFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawTextHelpFormatter):
         pass
@@ -1168,21 +1627,23 @@ def main() -> int:
             "Scans targets with ike-scan, detects IKEv1/IKEv2, tests transforms,\n"
             "and generates XML/JSON/HTML reports.\n\n"
             "Scan flow per host:\n"
-            "  1) IKEv1 discovery\n"
-            "  2) IKEv2 discovery\n"
-            "  3) Aggressive Mode tests (if IKEv1)\n"
-            "  4) Transform tests:\n"
+            "  1) IKEv1/IKEv2 discovery on UDP 500\n"
+            "  2) If UDP 500 is silent: NAT-T discovery on UDP 4500 (scan continues over 4500)\n"
+            "  3) If UDP 500 answered: probe whether the peer also answers on 4500 (info finding)\n"
+            "  4) Optional Aggressive Mode group VPN ID hunt (--idfile)\n"
+            "  5) Aggressive Mode tests (if IKEv1)\n"
+            "  6) Transform tests (Main Mode):\n"
             "     - default: curated common+legacy combos\n"
             "     - --fullalgs: brute-force all ENC/HASH/AUTH/DH combos\n"
-            "  5) Optional backoff fingerprinting (--fingerprint)\n\n"
+            "  7) Optional backoff fingerprinting (--fingerprint)\n\n"
             "Transform format: ENC[/bits],HASH,AUTH,GROUP\n"
-            "Example: '7/256,5,1,14' = AES256 / SHA256 / PSK / MODP2048.\n"
+            "Example: '7/256,4,1,14' = AES256 / SHA256 / PSK / MODP2048.\n"
         ),
         formatter_class=SmartFormatter,
         epilog=(
             "Aliases you can use for --enc, --hash, --auth, --group:\n"
             "  ENC:  DES=1, 3DES=5, AES=7/128, AES128=7/128, AES192=7/192, AES256=7/256\n"
-            "  HASH: MD5=1, SHA1=2, SHA-1=2, SHA 1=2, SHA256=5, SHA-256=5, SHA 256=5\n"
+            "  HASH: MD5=1, SHA1=2, SHA256=4, SHA384=5, SHA512=6\n"
             "  AUTH: PSK=1, RSA=3, RSA_SIG=3, RSA-SIG=3, RSA SIG=3, HYBRID=64221, HYBRID_RSA=64221\n"
             "  DH:   G1=1,  G2=2,  G5=5,  G14=14, G15=15, G16=16\n"
             "        MODP768=1, MODP1024=2, MODP1536=5, MODP2048=14, MODP3072=15, MODP4096=16\n\n"
@@ -1193,6 +1654,9 @@ def main() -> int:
             "  sudo ./ikess.py 10.0.0.1 --enc AES128,3DES,1,7/256 --hash SHA1,SHA256,1 --auth PSK,RSA --group G2,G14,16\n"
             "  sudo ./ikess.py 203.0.113.5 --enc AES256 --hash SHA256 --auth PSK --group MODP2048 --onlycustom\n"
             "  sudo ./ikess.py 203.0.113.5 --nat-t\n"
+            "  sudo ./ikess.py 203.0.113.5 --id mygroupvpn\n"
+            "  sudo ./ikess.py 203.0.113.5 --idfile wordlists/group_ids.txt\n"
+            "  sudo ./ikess.py 127.0.0.1 --sport 0\n"
         ),
     )
 
@@ -1231,7 +1695,7 @@ def main() -> int:
         "--hash",
         help=(
             "Comma separated hash list. Accepts numeric codes or aliases.\n"
-            "Examples: --hash SHA1,SHA256  or  --hash 2,5"
+            "Examples: --hash SHA1,SHA256  or  --hash 2,4"
         ),
     )
     parser.add_argument(
@@ -1269,6 +1733,49 @@ def main() -> int:
         ),
     )
 
+    parser.add_argument(
+        "--id",
+        dest="vpn_id",
+        help=(
+            "Group VPN ID sent with every Aggressive Mode probe (ike-scan --id).\n"
+            "Some gateways (Cisco ASA tunnel-group, SonicWall, FortiGate dialup, WatchGuard, ...)\n"
+            "only negotiate after seeing a known group ID and otherwise answer NO-PROPOSAL-CHOSEN\n"
+            "to every proposal. Without --id, ike-scan sends no meaningful group name."
+        ),
+    )
+    parser.add_argument(
+        "--sport",
+        dest="sport",
+        type=int,
+        default=None,
+        help=(
+            "UDP source port for every ike-scan call (ike-scan --sport). Default: 500 (4500 with --nat-t).\n"
+            "Use 0 for a random source port when scanning a local test server - its IKE daemon already\n"
+            "owns UDP 500/4500 and ike-scan cannot bind them at the same time. Note: some remote gateways\n"
+            "only answer clients coming from source port 500."
+        ),
+    )
+    parser.add_argument(
+        "--idtype",
+        dest="vpn_idtype",
+        type=int,
+        default=None,
+        help=(
+            "Identification type for --id (RFC 2407): 1=IPv4, 2=FQDN, 3=USER_FQDN, 11=KEY_ID.\n"
+            "KEY_ID (11) is the usual type for group VPN names. (default: 11)"
+        ),
+    )
+    parser.add_argument(
+        "--idfile",
+        dest="idfile",
+        help=(
+            "Brute force group VPN IDs from a wordlist file (one candidate per line, '#' comments)\n"
+            "with Aggressive Mode probes; the matching ID is adopted for all further probes.\n"
+            "Bundles a compact PSK proposal set per DH group and runs on the host's scan transport\n"
+            "(UDP 500, or UDP 4500 for NAT-T-only peers / --nat-t). Curated list: wordlists/group_ids.txt"
+        ),
+    )
+
     args = parser.parse_args()
 
     CUSTOM_ENC   = _parse_list_arg(args.enc,   ENC_ALIASES)
@@ -1281,11 +1788,26 @@ def main() -> int:
     NATT         = args.nat_t
     if NATT:
         EXTRA_IKESCAN_ARGS.append("--nat-t")
+    IKE_SPORT    = args.sport
+    if args.sport is not None:
+        # ike-scan: --sport must come after --nat-t to also change the NAT-T source port
+        EXTRA_IKESCAN_ARGS.append(f"--sport={args.sport}")
+    VPN_ID       = args.vpn_id
+    VPN_IDTYPE   = args.vpn_idtype if args.vpn_idtype is not None else 11
+    if args.vpn_idtype is not None and not VPN_ID:
+        logger.warning("--idtype given without --id - ignoring group VPN ID type")
+    if args.idfile:
+        if not Path(args.idfile).is_file():
+            logger.error(f"--idfile not found: {args.idfile}")
+            return 1
+        IDFILE   = args.idfile
+    if IDFILE and VPN_ID:
+        logger.info(f"--id '{VPN_ID}' given together with --idfile - using --id and skipping the group ID hunt")
 
     if not check_ike_dependency():
         return 1
 
-    logger.info("ikess – IKE Security Scanner")
+    logger.info("ikess – IKE Security Scanner by LRVT")
     start = datetime.now()
     logger.info(f"Scan started at {start:%Y-%m-%d %H:%M:%S}")
     logger.info(f"Targets: {', '.join(args.targets)}")

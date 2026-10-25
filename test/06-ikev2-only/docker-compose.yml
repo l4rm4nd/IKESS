@@ -1,0 +1,25 @@
+volumes:
+  ikev2-data:
+
+services:
+  vpn:
+    build: .
+    image: ikess/test-ikev2-only:latest
+    hostname: ikess-ikev2-only
+    container_name: ikess-ikev2-only
+    environment:
+      VPN_IPSEC_PSK: ${VPN_IPSEC_PSK:-ikess-test-only-change-this-psk-2026}
+      VPN_USER: ${VPN_USER:-vpnuser}
+      VPN_PASSWORD: ${VPN_PASSWORD:-ikess-test-password}
+      VPN_PUBLIC_IP: ${VPN_PUBLIC_IP:-127.0.0.1}
+      VPN_DNS_SRV1: 1.1.1.1
+      VPN_DNS_SRV2: 1.0.0.1
+      VPN_IKEV2_ONLY: "yes"
+    restart: unless-stopped
+    ports:
+      - "500:500/udp"
+      - "4500:4500/udp"
+    privileged: true
+    volumes:
+      - ikev2-data:/etc/ipsec.d
+      - /lib/modules:/lib/modules:ro
