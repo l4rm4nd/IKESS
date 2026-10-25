@@ -4,7 +4,7 @@ These isolated Docker Compose projects provide deterministic VPN targets for IKE
 
 | Directory | IKE versions and behavior | Expected IKEv1 proposal |
 | --- | --- | --- |
-| `01-ikev1-aggressive` | IKEv1 Aggressive Mode; no gateway-specific or group ID required | AES-256/SHA-256/PSK/DH14 |
+| `01-ikev1-aggressive` | IKEv1 Aggressive Mode; no gateway-specific or group ID required | AES-256/SHA-1/PSK/DH14 |
 | `01-ikev1-aggressive` | IKEv1 Aggressive Mode; no gateway-specific or group ID required | AES-256/SHA-1/PSK/DH14 |
 | `02-ikev1-ikev2-aes256` | IKEv1 Main Mode and IKEv2; IKEv1 is restricted to one AES proposal | AES-256/SHA-256/PSK/DH14 only |
 | `03-ikev1-ikev2-default` | IKEv1 Main Mode and IKEv2 with the upstream IKE proposal set | Upstream AES proposal set |
