@@ -1,3 +1,10 @@
+## [0.5.2](https://github.com/l4rm4nd/IKESS/compare/v0.5.1...v0.5.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* add AES_CBC as finding ([724882d](https://github.com/l4rm4nd/IKESS/commit/724882d962f33840f8a77b441736e90abc626928))
+
 ## [0.5.1](https://github.com/l4rm4nd/IKESS/compare/v0.5.0...v0.5.1) (2026-10-25)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * fix argparse; new --fullalgs behaviour ([430fe1d](https://github.com/l4rm4nd/IKESS/commit/430fe1d538d274f1d78c71e9abaadf9ba0ed94f3))
-
-## [0.2.3](https://github.com/l4rm4nd/IKESS/compare/v0.2.2...v0.2.3) (2025-10-31)
-
-
-### Bug Fixes
-
-* fullalgs now iterates all possible transforms ([1048312](https://github.com/l4rm4nd/IKESS/commit/10483126562b1f64bb35f1fea66c0723ade958b1))
 
