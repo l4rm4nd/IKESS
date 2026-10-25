@@ -5,7 +5,7 @@ Author: LRVT[](https://github.com/l4rm4nd)
 """
 
 import argparse
-import html
+import html as html_lib
 import json
 import logging
 import re
@@ -518,6 +518,26 @@ def _parse_sa_block(handshake: str) -> List[str]:
             break
     return blocks
 
+def _parse_psk_crack_record(output: str) -> Optional[Dict[str, str]]:
+    """Parse ike-scan --pskcrack output and return HASH_R plus the full record."""
+    match = re.search(
+        r"IKE PSK parameters[^\n]*:\s*\n\s*([0-9a-f]+(?::[0-9a-f]+){8})",
+        output,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    parameters = match.group(1).lower()
+    hash_r = parameters.rsplit(":", 1)[1]
+    hash_bytes = len(hash_r) // 2
+    hash_name = {16: "MD5", 20: "SHA1", 32: "SHA2-256"}.get(hash_bytes, f"unknown ({hash_bytes} bytes)")
+    return {
+        "hash_r": hash_r,
+        "hash_algorithm": hash_name,
+        "psk_crack_supported": hash_bytes in {16, 20},
+        "parameters": parameters,
+    }
+
 NATT_VID_RE = re.compile(r"VID=[a-fA-F0-9]+\s+\(([^)]*(?:RFC\s*3947|nat-t-ike)[^)]*)\)", re.I)
 
 def _parse_natt_vids(handshake: str) -> List[str]:
@@ -767,7 +787,7 @@ def fingerprint_backoff(vpns: Dict[str, Dict[str, Any]], ip: str, transform: Opt
 # DH groups ike-scan can express for the aggressive-mode KE payload size (--dhgroup, MODP only)
 IKE_DHGROUP_SUPPORTED = {1, 2, 5, 14, 15, 16, 17, 18}
 
-def _try_transform(ip: str, transform: str, aggressive: bool = False) -> str:
+def _try_transform(ip: str, transform: str, aggressive: bool = False, capture_psk: bool = False) -> str:
     base = ["ike-scan"]
     if aggressive:
         base += ["--aggressive"]
@@ -788,6 +808,9 @@ def _try_transform(ip: str, transform: str, aggressive: bool = False) -> str:
         parts = [p.strip() for p in transform.split(",")]
         if len(parts) == 4 and parts[3].isdigit() and int(parts[3]) in IKE_DHGROUP_SUPPORTED:
             base += ["--dhgroup", parts[3]]
+        if capture_psk:
+            # Emits HASH_R and the complete nine-field record required by psk-crack.
+            base += ["--pskcrack"]
     base.append(ip)
     out, _, _ = run_command(base, timeout=10)
     return _strip_banner(out)
@@ -906,16 +929,21 @@ def test_aggressive_mode(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
         return
     logger.info(f"Testing Aggressive Mode for {ip}")
     _, transforms_aggr = _transform_sets()
-    accepted_sa, accepted_keys = [], []
+    accepted_sa, accepted_keys, psk_records = [], [], []
     total = len(transforms_aggr)
     for i, t in enumerate(transforms_aggr, 1):
         progress = (i / total) * 100
         print(f"\r[{'█' * int(progress/100*30):30}] {progress:.1f}% - Aggressive Mode Transform: {t}", end="", flush=True)
-        out = _try_transform(ip, t, aggressive=True)
+        out = _try_transform(ip, t, aggressive=True, capture_psk=True)
         if "Handshake returned" in out:
-            for sa in _parse_sa_block(out):
+            sa_blocks = _parse_sa_block(out)
+            for sa in sa_blocks:
                 accepted_sa.append(sa)
                 accepted_keys.append(t)
+            psk_record = _parse_psk_crack_record(out)
+            if psk_record:
+                psk_record["transform"] = "; ".join(sa_blocks) if sa_blocks else t
+                psk_records.append(psk_record)
             vids = _parse_vids(out)
             if vids:
                 vpns[ip].setdefault("vid", [])
@@ -925,6 +953,7 @@ def test_aggressive_mode(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     print()
     vpns[ip]["aggressive"] = list(dict.fromkeys(accepted_sa))
     vpns[ip]["accepted_transform_keys_aggr"] = list(dict.fromkeys(accepted_keys))
+    vpns[ip]["aggressive_psk"] = psk_records
 
 def test_ikev2_features(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     if not vpns[ip].get("v2"):
@@ -966,6 +995,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             "flaws": [],
             "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "good": 0},
             "accepted_transforms": {"main": [], "aggressive": [], "ikev2": []},
+            "aggressive_psk": [],
             "weak_algorithms": [],
             "proof": {},  # <-- NEW: Proof section
             "meta": {
@@ -1066,6 +1096,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         results["services"][ip]["accepted_transforms"]["main"] = list(dict.fromkeys(data.get("transforms", [])))
         results["services"][ip]["accepted_transforms"]["aggressive"] = list(dict.fromkeys(data.get("aggressive", [])))
         results["services"][ip]["accepted_transforms"]["ikev2"] = list(dict.fromkeys(data.get("ikev2_transforms", [])))
+        results["services"][ip]["aggressive_psk"] = data.get("aggressive_psk", [])
         results["services"][ip]["weak_algorithms"] = sorted(decoded_weak)
 
     summary = {"total_hosts": len(vpns), "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "good":0}
@@ -1104,7 +1135,7 @@ _WEAK_TRANSFORM_COMPONENT_RE = re.compile(
 
 def _format_transform_html(sa: str) -> str:
     """Escape an SA description and emphasize weak/deprecated components."""
-    escaped = html.escape(str(sa))
+    escaped = html_lib.escape(str(sa))
     return _WEAK_TRANSFORM_COMPONENT_RE.sub(
         lambda match: (
             "<span class='text-danger fw-bold' title='Weak or deprecated'>"
@@ -1161,6 +1192,28 @@ def generate_html_report(results: Dict, filename: str):
             f"<li><code class='text-wrap'>{_format_transform_html(sa)}</code></li>"
             for sa in svc["accepted_transforms"].get("ikev2", [])
         ) or "<li><span class='text-muted'>No selected suite decoded</span></li>"
+        psk_hash_row_parts = []
+        for record_idx, record in enumerate(svc.get("aggressive_psk", [])):
+            record_id = f"psk-{idx}-{record_idx}"
+            hash_r = html_lib.escape(record["hash_r"])
+            transform = html_lib.escape(record["transform"])
+            parameters = html_lib.escape(record["parameters"])
+            compatibility = (
+                "Compatible with ike-scan psk-crack"
+                if record.get("psk_crack_supported")
+                else f"ike-scan psk-crack does not support {html_lib.escape(record.get('hash_algorithm', 'this hash'))}"
+            )
+            psk_hash_row_parts.append(
+                "<li class='mb-3'>"
+                f"<div><strong>HASH_R:</strong> <code class='text-danger text-break'>{hash_r}</code></div>"
+                f"<div class='small text-muted text-break'>{transform}</div>"
+                f"<div class='small text-muted'>{compatibility}</div>"
+                "<details class='mt-2'><summary class='small'>Full psk-crack record</summary>"
+                f"<pre id='{record_id}' class='json-pre mt-2 mb-2'><code>{parameters}</code></pre>"
+                f"<button class='btn btn-outline-secondary btn-sm' type='button' onclick=\"copyTextFrom('{record_id}')\">Copy psk-crack record</button>"
+                "</details></li>"
+            )
+        psk_hash_rows = "".join(psk_hash_row_parts) or "<li><span class='text-muted'>No PSK hash captured</span></li>"
         ikev2_transform_note = ""
         if "IKEv2" in svc["meta"]["versions"]:
             if svc["accepted_transforms"].get("ikev2"):
@@ -1196,6 +1249,7 @@ def generate_html_report(results: Dict, filename: str):
             "flaws": svc["flaws"],
             "severity_counts": svc["severity_counts"],
             "accepted_transforms": svc["accepted_transforms"],
+            "aggressive_psk": svc.get("aggressive_psk", []),
             "weak_algorithms": svc["weak_algorithms"],
             "proof": svc.get("proof", {}),        # ADD THIS LINE
             "meta": svc["meta"],
@@ -1256,6 +1310,9 @@ def generate_html_report(results: Dict, filename: str):
                       </tbody>
                     </table>
                   </div>
+                                    <h6 class="mt-3 mb-2">Aggressive Mode PSK HASH_R</h6>
+                                    <ul class="mb-0">{psk_hash_rows}</ul>
+                                      <p class="small text-muted mt-2 mb-0">HASH_R alone is not valid psk-crack input. Its data file requires the complete nine-field record. Legacy psk-crack supports MD5 and SHA1, but not SHA2-256.</p>
                 </div>
               </div>
 
@@ -1481,6 +1538,16 @@ def generate_xml_report(results: Dict[str, Any], filename: str) -> None:
         for t in svc["accepted_transforms"].get("ikev2", []):
             ET.SubElement(ikev2, "sa").text = str(t)
 
+        # Aggressive Mode HASH_R and complete psk-crack records
+        psk_records = ET.SubElement(s, "aggressive_psk")
+        for record in svc.get("aggressive_psk", []):
+            item = ET.SubElement(psk_records, "record")
+            ET.SubElement(item, "transform").text = str(record.get("transform", ""))
+            ET.SubElement(item, "hash_r").text = str(record.get("hash_r", ""))
+            ET.SubElement(item, "hash_algorithm").text = str(record.get("hash_algorithm", ""))
+            ET.SubElement(item, "psk_crack_supported").text = str(record.get("psk_crack_supported", False)).lower()
+            ET.SubElement(item, "parameters").text = str(record.get("parameters", ""))
+
         # weak algorithms
         weak = ET.SubElement(s, "weak_algorithms")
         for w in svc.get("weak_algorithms", []):
@@ -1548,6 +1615,11 @@ def print_console_report(results: Dict[str, Any]) -> None:
             if svc["accepted_transforms"]["aggressive"]:
                 for t in svc["accepted_transforms"]["aggressive"]:
                     logger.info(f"    - IKEv1 Aggressive Mode: {t}")
+        if svc.get("aggressive_psk"):
+            logger.info("  Aggressive Mode PSK HASH_R values:")
+            for record in svc["aggressive_psk"]:
+                support = "psk-crack compatible" if record.get("psk_crack_supported") else "not supported by legacy psk-crack"
+                logger.info(f"    - {record['hash_r']} [{record.get('hash_algorithm', 'unknown')}; {support}] ({record['transform']})")
         if svc["accepted_transforms"].get("ikev2"):
             logger.info("  Selected IKEv2 suite (confirmed, not exhaustive):")
             for t in svc["accepted_transforms"]["ikev2"]:
@@ -1584,6 +1656,7 @@ def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time:
     xml_path = out_dir / f"{ts}_ikess_scan{suffix}.xml"
     json_path = out_dir / f"{ts}_ikess_scan{suffix}.json"
     html_path = out_dir / f"{ts}_ikess_scan{suffix}.html"
+    psk_path = out_dir / f"{ts}_ikess_scan{suffix}.psk"
 
     generate_xml_report(results, str(xml_path))
     with open(json_path, "w", encoding="utf-8") as f:
@@ -1592,10 +1665,22 @@ def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time:
     generate_html_report(results, str(html_path))
     print_console_report(results)
 
+    psk_parameters = [
+        record["parameters"]
+        for svc in results["services"].values()
+        for record in svc.get("aggressive_psk", [])
+        if record.get("parameters")
+    ]
+    if psk_parameters:
+        with open(psk_path, "w", encoding="ascii") as f:
+            f.write("\n".join(psk_parameters) + "\n")
+
     logger.info("Detailed reports saved to:")
     logger.info(f"  XML: {xml_path}")
     logger.info(f"  JSON: {json_path}")
     logger.info(f"  HTML: {html_path}")
+    if psk_parameters:
+        logger.info(f"  PSK:  {psk_path} (complete nine-field records; psk-crack supports MD5/SHA1 only)")
 
 # ------------------------------ Orchestration ---------------------------
 def scan_target(ip: str) -> Dict[str, Any]:
@@ -1605,6 +1690,7 @@ def scan_target(ip: str) -> Dict[str, Any]:
         "v1": False, "v2": False,
         "vid": [],
         "transforms": [], "aggressive": [], "ikev2_transforms": [],
+        "aggressive_psk": [],
         "accepted_transform_keys_main": [], "accepted_transform_keys_aggr": [],
         "showbackoff": "N/A",
     }

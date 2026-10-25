@@ -12,11 +12,11 @@ RUN set -eux; \
       } \
       /^  (leftxauthserver|rightxauthclient)=/ { next } \
       /^ike_algs=/ { \
-        print "ike_algs=\"aes256-sha2_256;modp2048\""; \
+          print "ike_algs=\"aes256-sha1;modp2048\""; \
         next \
       } \
       /^  phase2alg=/ { \
-        print "  phase2alg=aes256-sha2_256"; \
+          print "  phase2alg=aes256-sha1"; \
         next \
       } \
       $0 == "conn xauth-psk" { \
