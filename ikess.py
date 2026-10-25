@@ -80,6 +80,7 @@ FLAWS = {
     "DISC": "The IKE service is discoverable",
     "ENC_DES": "DES encryption detected - insecure and should be replaced with AES",
     "ENC_3DES": "3DES encryption detected - deprecated and should be replaced with AES",
+    "ENC_AES_CBC": "AES-CBC encryption detected - legacy non-AEAD mode; prefer AES-GCM or ChaCha20-Poly1305",
     "HASH_MD5": "MD5 hash algorithm detected - insecure due to collision vulnerabilities",
     "HASH_SHA1": "SHA1 hash algorithm detected - deprecated due to collision vulnerabilities",
     "DHG_1": "DH Group 1 (MODP-768) detected - weak DH group, should use Group 14+ (2048-bit+)",
@@ -1069,11 +1070,15 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         decoded_weak = set()
         for key in all_keys:
             decoded_weak.update(_decode_transform_key(key))
+        if any(re.search(r"\bEncr=AES_CBC\b", sa, re.I) for sa in data.get("ikev2_transforms", [])):
+            decoded_weak.add("AES-CBC (non-AEAD)")
 
         if "DES" in decoded_weak:
             add_finding(FLAWS["ENC_DES"], "high")
         if "3DES" in decoded_weak:
             add_finding(FLAWS["ENC_3DES"], "medium")
+        if "AES-CBC (non-AEAD)" in decoded_weak:
+            add_finding(FLAWS["ENC_AES_CBC"], "medium")
         if "MD5" in decoded_weak:
             add_finding(FLAWS["HASH_MD5"], "high")
         if "SHA1" in decoded_weak:
@@ -1126,7 +1131,7 @@ def _sev_pill(sev: str, count: int) -> str:
     if sev == "good": return f'<span class="badge rounded-pill text-bg-success">GOOD {count}</span>'
 
 _WEAK_TRANSFORM_COMPONENT_RE = re.compile(
-    r"\b(?:Enc|Encr)=(?:3DES|DES)\b"
+    r"\b(?:Enc|Encr)=(?:3DES|DES|AES_CBC)\b"
     r"|\b(?:Hash|Prf|Integ)=(?:MD5|SHA1|HMAC_MD5(?:_\d+)?|HMAC_SHA1(?:_\d+)?)\b"
     r"|\bAuth=PSK\b"
     r"|\b(?:Group|DH_Group)=(?:1|2|5)(?::[A-Za-z0-9_-]+)?\b",
