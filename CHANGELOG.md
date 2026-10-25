@@ -1,3 +1,10 @@
+## [0.4.0](https://github.com/l4rm4nd/IKESS/compare/v0.3.0...v0.4.0) (2026-10-25)
+
+
+### Features
+
+* add --nat-t option to probe IKE over UDP 4500 ([a811fd8](https://github.com/l4rm4nd/IKESS/commit/a811fd8013716b4e0da48c4ee428500e3ef65770))
+
 ## [0.3.0](https://github.com/l4rm4nd/IKESS/compare/v0.2.3...v0.3.0) (2025-10-31)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * add ike-scan for docker ([e6d7afd](https://github.com/l4rm4nd/IKESS/commit/e6d7afd5123a43ea5a78733b88006507d9b53363))
-
-## [0.2.0](https://github.com/l4rm4nd/IKESS/compare/v0.1.4...v0.2.0) (2025-10-29)
-
-
-### Features
-
-* trigger ci ([8abc5f7](https://github.com/l4rm4nd/IKESS/commit/8abc5f7a1183ecbba448dba34f07f2da59efdb01))
 
