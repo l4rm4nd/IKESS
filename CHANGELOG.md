@@ -1,3 +1,10 @@
+## [0.5.0](https://github.com/l4rm4nd/IKESS/compare/v0.4.0...v0.5.0) (2026-10-25)
+
+
+### Features
+
+* improve ike detection and add features ([0c42694](https://github.com/l4rm4nd/IKESS/commit/0c426941cdf04a406a2cb80e9c4d24d098276953))
+
 ## [0.4.0](https://github.com/l4rm4nd/IKESS/compare/v0.3.0...v0.4.0) (2026-10-25)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * proper filenames ([001315f](https://github.com/l4rm4nd/IKESS/commit/001315ff3774dcb713b5d9ab6f4e5d40a518d281))
-
-## [0.2.1](https://github.com/l4rm4nd/IKESS/compare/v0.2.0...v0.2.1) (2025-10-29)
-
-
-### Bug Fixes
-
-* add ike-scan for docker ([e6d7afd](https://github.com/l4rm4nd/IKESS/commit/e6d7afd5123a43ea5a78733b88006507d9b53363))
 
