@@ -12,6 +12,7 @@ A Python3 Script for Auditing IKE VPN Servers
 - Risk rates findings with summary and recommendations
 - Support for fingerprinting via vendor ID (VID)
 - Support for fingerprinting via backoff pattern (optional)
+- Support for probing over NAT-T / UDP 4500 (optional)
 
 ## Usage
 
@@ -19,7 +20,7 @@ A Python3 Script for Auditing IKE VPN Servers
 > This script requires the binary `ike-scan` and must be run as root
 
 ```bash
-usage: ikess [-h] [--fullalgs] [--fingerprint] [--enc ENC] [--hash HASH] [--auth AUTH] [--group GROUP] [--onlycustom] targets [targets ...]
+usage: ikess [-h] [--fullalgs] [--fingerprint] [--enc ENC] [--hash HASH] [--auth AUTH] [--group GROUP] [--onlycustom] [--nat-t] targets [targets ...]
 
 ikess - IKE Security Scanner (Sequential Mode)
 
@@ -58,6 +59,9 @@ options:
                        Examples: --group G14,G16  or  --dh MODP2048,MODP4096  or  --group 14,16 (default: None)
   --onlycustom         Scan only the transforms built from your custom --enc/--hash/--auth/--group lists. Without this
                        flag, custom items are merged into the curated or expanded set. (default: False)
+  --nat-t, --natt      Probe over NAT-T (RFC 3947): UDP 4500 source+dest with non-ESP marker (ike-scan --nat-t).
+                       Applies to every ike-scan call. Report files get a '_natt4500' suffix. Note: many gateways
+                       only answer on 4500 after NAT detection on 500, so no response here is not conclusive. (default: False)
 
 Aliases you can use for --enc, --hash, --auth, --group:
   ENC:  DES=1, 3DES=5, AES=7/128, AES128=7/128, AES192=7/192, AES256=7/256
@@ -72,6 +76,7 @@ Examples:
   sudo ./ikess.py 10.0.0.1 --enc DES,3DES --onlycustom
   sudo ./ikess.py 10.0.0.1 --enc AES128,3DES,1,7/256 --hash SHA1,SHA256,1 --auth PSK,RSA --group G2,G14,16
   sudo ./ikess.py 203.0.113.5 --enc AES256 --hash SHA256 --auth PSK --group MODP2048 --onlycustom
+  sudo ./ikess.py 203.0.113.5 --nat-t
 ```
 
 You can also run via Docker:

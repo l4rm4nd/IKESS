@@ -34,6 +34,9 @@ CUSTOM_HASH: List[str] = []
 CUSTOM_AUTH: List[str] = []
 CUSTOM_GROUP: List[str] = []
 ONLYCUSTOM: bool = False
+NATT: bool = False
+# Extra flags prepended to every ike-scan invocation (e.g. --nat-t)
+EXTRA_IKESCAN_ARGS: List[str] = []
 
 # --------------------------- Vulnerability text ------------------------
 FLAWS = {
@@ -259,6 +262,8 @@ def _implementation_sources(data: Dict[str, Any]) -> Dict[str, Optional[str]]:
     return {"backoff": backoff, "vid": vid_choice, "primary": primary}
 
 def run_command(cmd: List[str], timeout: int = 30) -> Tuple[str, str, int]:
+    if cmd and cmd[0] == "ike-scan" and EXTRA_IKESCAN_ARGS:
+        cmd = [cmd[0]] + EXTRA_IKESCAN_ARGS + cmd[1:]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return (p.stdout.strip(), p.stderr.strip(), p.returncode)
@@ -686,6 +691,10 @@ def generate_html_report(results: Dict, filename: str):
 
     scope_badge = '<span class="badge text-bg-primary">Scope: --onlycustom</span>' if confirmed_only \
                   else '<span class="badge text-bg-light">Scope: default</span>'
+    if results.get("scan_info", {}).get("nat_t", False):
+        scope_badge += ' <span class="badge text-bg-warning">Transport: NAT-T (UDP 4500)</span>'
+    else:
+        scope_badge += ' <span class="badge text-bg-light">Transport: UDP 500</span>'
 
     host_cards = []
 
@@ -1076,6 +1085,8 @@ def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time:
         "end_time": end_time,
         "targets": list(vpns.keys()),
         "confirmed_only": ONLYCUSTOM,
+        "nat_t": NATT,
+        "udp_port": 4500 if NATT else 500,
     }
 
     # ensure subfolder exists
@@ -1086,9 +1097,10 @@ def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     # build timestamped paths
-    xml_path = out_dir / f"{ts}_ikess_scan.xml"
-    json_path = out_dir / f"{ts}_ikess_scan.json"
-    html_path = out_dir / f"{ts}_ikess_scan.html"
+    suffix = "_natt4500" if NATT else ""
+    xml_path = out_dir / f"{ts}_ikess_scan{suffix}.xml"
+    json_path = out_dir / f"{ts}_ikess_scan{suffix}.json"
+    html_path = out_dir / f"{ts}_ikess_scan{suffix}.html"
 
     generate_xml_report(results, str(xml_path))
     with open(json_path, "w", encoding="utf-8") as f:
@@ -1144,7 +1156,7 @@ def scan_target(ip: str) -> Dict[str, Any]:
     return vpn
 
 def main() -> int:
-    global FULLALGS, FINGERPRINT, CUSTOM_ENC, CUSTOM_HASH, CUSTOM_AUTH, CUSTOM_GROUP, ONLYCUSTOM
+    global FULLALGS, FINGERPRINT, CUSTOM_ENC, CUSTOM_HASH, CUSTOM_AUTH, CUSTOM_GROUP, ONLYCUSTOM, NATT
 
     class SmartFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawTextHelpFormatter):
         pass
@@ -1180,6 +1192,7 @@ def main() -> int:
             "  sudo ./ikess.py 10.0.0.1 --enc DES,3DES --onlycustom\n"
             "  sudo ./ikess.py 10.0.0.1 --enc AES128,3DES,1,7/256 --hash SHA1,SHA256,1 --auth PSK,RSA --group G2,G14,16\n"
             "  sudo ./ikess.py 203.0.113.5 --enc AES256 --hash SHA256 --auth PSK --group MODP2048 --onlycustom\n"
+            "  sudo ./ikess.py 203.0.113.5 --nat-t\n"
         ),
     )
 
@@ -1245,6 +1258,17 @@ def main() -> int:
         ),
     )
 
+    parser.add_argument(
+        "--nat-t", "--natt",
+        dest="nat_t",
+        action="store_true",
+        help=(
+            "Probe over NAT-T (RFC 3947): UDP 4500 source+dest with non-ESP marker (ike-scan --nat-t).\n"
+            "Applies to every ike-scan call. Report files get a '_natt4500' suffix. Note: many gateways\n"
+            "only answer on 4500 after NAT detection on 500, so no response here is not conclusive."
+        ),
+    )
+
     args = parser.parse_args()
 
     CUSTOM_ENC   = _parse_list_arg(args.enc,   ENC_ALIASES)
@@ -1254,6 +1278,9 @@ def main() -> int:
     ONLYCUSTOM   = args.onlycustom
     FULLALGS     = args.fullalgs
     FINGERPRINT  = args.fingerprint
+    NATT         = args.nat_t
+    if NATT:
+        EXTRA_IKESCAN_ARGS.append("--nat-t")
 
     if not check_ike_dependency():
         return 1
@@ -1262,6 +1289,7 @@ def main() -> int:
     start = datetime.now()
     logger.info(f"Scan started at {start:%Y-%m-%d %H:%M:%S}")
     logger.info(f"Targets: {', '.join(args.targets)}")
+    logger.info(f"Transport: {'NAT-T (UDP 4500, ike-scan --nat-t)' if NATT else 'UDP 500'}")
 
     ips_to_scan: List[str] = []
     for t in args.targets:
