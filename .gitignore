@@ -1,3 +1,7 @@
+# Python bytecode/cache files
+__pycache__/
+*.py[cod]
+
 # ignore all generated reports
 results/*
 !results/.gitkeep
