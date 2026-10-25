@@ -71,16 +71,16 @@ options:
                        switches to UDP 4500 per host when UDP 500 is silent; this flag forces 4500 for the whole
                        scan. Note: many gateways only answer on 4500 after NAT detection on 500, so no response
                        here is not conclusive. (default: False)
-  --id ID             Group VPN ID sent with every Aggressive Mode probe (ike-scan --id). Some gateways (Cisco ASA
+  --id ID              Group VPN ID sent with every Aggressive Mode probe (ike-scan --id). Some gateways (Cisco ASA
                        tunnel-group, SonicWall, FortiGate dialup, WatchGuard, ...) only negotiate after seeing a known
                        group ID and otherwise answer NO-PROPOSAL-CHOSEN to every proposal. (default: None)
-  --idtype IDTYPE     Identification type for --id (RFC 2407): 1=IPv4, 2=FQDN, 3=USER_FQDN, 11=KEY_ID. KEY_ID is the
+  --idtype IDTYPE      Identification type for --id (RFC 2407): 1=IPv4, 2=FQDN, 3=USER_FQDN, 11=KEY_ID. KEY_ID is the
                        usual type for group VPN names. (default: 11)
-  --idfile IDFILE     Brute force group VPN IDs from a wordlist file (one candidate per line, '#' comments) with
+  --idfile IDFILE      Brute force group VPN IDs from a wordlist file (one candidate per line, '#' comments) with
                        Aggressive Mode probes; the matching ID is adopted for all further probes. Bundles a compact
-                       PSK proposal set per DH group and runs on the host's scan transport (UDP 500, or UDP 4500
+                       PSK proposal set per DH group and runs on the hosts scan transport (UDP 500, or UDP 4500
                        for NAT-T-only peers / --nat-t). A curated list ships in wordlists/group_ids.txt.
-  --sport SPORT       UDP source port for every ike-scan call (ike-scan --sport). Default: 500 (4500 with --nat-t).
+  --sport SPORT        UDP source port for every ike-scan call (ike-scan --sport). Default: 500 (4500 with --nat-t).
                        Use 0 for a random source port when scanning a local test server - its IKE daemon already
                        owns UDP 500/4500 and ike-scan cannot bind them at the same time. (default: None)
 
