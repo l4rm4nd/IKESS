@@ -6,7 +6,7 @@ RUN apk add --no-cache \
       git \
       openssl-dev
 # build from upstream
-RUN git clone https://github.com/royhills/ike-scan.git /src/ike-scan && \
+RUN git clone https://github.com/l4rm4nd/ike-scan.git /src/ike-scan && \
     cd /src/ike-scan && \
     autoreconf --install && \
     ./configure --with-openssl && \
