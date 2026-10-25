@@ -5,6 +5,7 @@ Author: LRVT[](https://github.com/l4rm4nd)
 """
 
 import argparse
+import html
 import json
 import logging
 import re
@@ -551,6 +552,8 @@ def check_ikev2(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     if positive:
         vpns[ip]["v2"] = True
         vpns[ip]["ikev2_raw_handshake"] = out.strip()
+        if "IKEv2 SA_INIT Handshake returned" in body:
+            vpns[ip]["ikev2_transforms"] = _parse_sa_block(body)
 
 def check_ikev1_aggressive(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     """Discover an Aggressive-Mode-only IKEv1 peer, optionally using --id."""
@@ -591,6 +594,8 @@ def probe_natt_port(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
         if out2 and (_has_positive_summary(out2) or _has_body_markers(_strip_banner(out2), BODY_MARKERS_V2)):
             probe["v2"] = True
             probe["ikev2_raw"] = out2.strip()
+            if not vpns[ip].get("ikev2_transforms") and "IKEv2 SA_INIT Handshake returned" in out2:
+                vpns[ip]["ikev2_transforms"] = _parse_sa_block(out2)
     vpns[ip]["natt_4500"] = probe
 
 def discover_over_natt(vpns: Dict[str, Dict[str, Any]], ip: str) -> bool:
@@ -620,6 +625,8 @@ def discover_over_natt(vpns: Dict[str, Dict[str, Any]], ip: str) -> bool:
         probe["ikev2_raw"] = out2.strip()
         vpns[ip]["v2"] = True
         vpns[ip]["ikev2_raw_handshake"] = out2.strip()
+        if "IKEv2 SA_INIT Handshake returned" in out2:
+            vpns[ip]["ikev2_transforms"] = _parse_sa_block(out2)
     vpns[ip]["natt_4500"] = probe
     if probe["v1"] or probe["v2"]:
         logger.info(f"IKE discovered on UDP 4500 (NAT-T) for {ip}")
@@ -958,7 +965,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         results["services"][ip] = {
             "flaws": [],
             "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "good": 0},
-            "accepted_transforms": {"main": [], "aggressive": []},
+            "accepted_transforms": {"main": [], "aggressive": [], "ikev2": []},
             "weak_algorithms": [],
             "proof": {},  # <-- NEW: Proof section
             "meta": {
@@ -1058,6 +1065,7 @@ def analyze_security_flaws(vpns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 
         results["services"][ip]["accepted_transforms"]["main"] = list(dict.fromkeys(data.get("transforms", [])))
         results["services"][ip]["accepted_transforms"]["aggressive"] = list(dict.fromkeys(data.get("aggressive", [])))
+        results["services"][ip]["accepted_transforms"]["ikev2"] = list(dict.fromkeys(data.get("ikev2_transforms", [])))
         results["services"][ip]["weak_algorithms"] = sorted(decoded_weak)
 
     summary = {"total_hosts": len(vpns), "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "good":0}
@@ -1085,6 +1093,25 @@ def _sev_pill(sev: str, count: int) -> str:
     if sev == "low": return f'<span class="badge rounded-pill text-bg-info text-dark">LOW {count}</span>'
     if sev == "info": return f'<span class="badge rounded-pill text-bg-secondary text-dark">INFO {count}</span>'
     if sev == "good": return f'<span class="badge rounded-pill text-bg-success">GOOD {count}</span>'
+
+_WEAK_TRANSFORM_COMPONENT_RE = re.compile(
+    r"\b(?:Enc|Encr)=(?:3DES|DES)\b"
+    r"|\b(?:Hash|Prf|Integ)=(?:MD5|SHA1|HMAC_MD5(?:_\d+)?|HMAC_SHA1(?:_\d+)?)\b"
+    r"|\bAuth=PSK\b"
+    r"|\b(?:Group|DH_Group)=(?:1|2|5)(?::[A-Za-z0-9_-]+)?\b",
+    re.IGNORECASE,
+)
+
+def _format_transform_html(sa: str) -> str:
+    """Escape an SA description and emphasize weak/deprecated components."""
+    escaped = html.escape(str(sa))
+    return _WEAK_TRANSFORM_COMPONENT_RE.sub(
+        lambda match: (
+            "<span class='text-danger fw-bold' title='Weak or deprecated'>"
+            f"{match.group(0)}</span>"
+        ),
+        escaped,
+    )
 
 def generate_html_report(results: Dict, filename: str):
     total = results["summary"]["total_hosts"]
@@ -1123,22 +1150,34 @@ def generate_html_report(results: Dict, filename: str):
         impl_display = " / ".join(impl_parts) if impl_parts else "N/A"
 
         main_rows = "".join(
-            f"<li><code class='text-wrap'>{sa}</code></li>"
+            f"<li><code class='text-wrap'>{_format_transform_html(sa)}</code></li>"
             for sa in svc["accepted_transforms"]["main"]
         ) or "<li><span class='text-muted'>None</span></li>"
         aggr_rows = "".join(
-            f"<li><code class='text-wrap'>{sa}</code></li>"
+            f"<li><code class='text-wrap'>{_format_transform_html(sa)}</code></li>"
             for sa in svc["accepted_transforms"]["aggressive"]
         ) or "<li><span class='text-muted'>None</span></li>"
+        ikev2_rows = "".join(
+            f"<li><code class='text-wrap'>{_format_transform_html(sa)}</code></li>"
+            for sa in svc["accepted_transforms"].get("ikev2", [])
+        ) or "<li><span class='text-muted'>No selected suite decoded</span></li>"
         ikev2_transform_note = ""
         if "IKEv2" in svc["meta"]["versions"]:
-            ikev2_transform_note = (
-                "<div class='alert alert-secondary py-2 mb-3' role='note'>"
-                "<strong>IKEv2 transforms:</strong> not enumerated. "
-                "ike-scan 1.9.x can detect IKEv2 using its fixed default proposal, "
-                "but does not support custom IKEv2 transform enumeration."
-                "</div>"
-            )
+            if svc["accepted_transforms"].get("ikev2"):
+                ikev2_transform_note = (
+                    "<div class='alert alert-secondary py-2 mb-3' role='note'>"
+                    "<strong>IKEv2 result:</strong> the suite below was selected by the peer "
+                    "from the discovery proposal. It is confirmed, but is not an exhaustive "
+                    "enumeration of every suite the peer may accept."
+                    "</div>"
+                )
+            else:
+                ikev2_transform_note = (
+                    "<div class='alert alert-secondary py-2 mb-3' role='note'>"
+                    "<strong>IKEv2 result:</strong> the peer responded, but no selected suite "
+                    "was decoded. Stock ike-scan 1.9.x cannot customize IKEv2 transforms."
+                    "</div>"
+                )
 
         weak_list = "".join(f"<li>{w}</li>" for w in svc["weak_algorithms"]) or "<li><span class='text-muted'>None detected</span></li>"
 
@@ -1210,6 +1249,10 @@ def generate_html_report(results: Dict, filename: str):
                                                     <td class="fw-semibold">IKEv1 Aggressive Mode</td>
                           <td><ul class="mb-0">{aggr_rows}</ul></td>
                         </tr>
+                                                <tr>
+                                                    <td class="fw-semibold">IKEv2 IKE_SA_INIT</td>
+                                                    <td><ul class="mb-0">{ikev2_rows}</ul></td>
+                                                </tr>
                       </tbody>
                     </table>
                   </div>
@@ -1434,6 +1477,9 @@ def generate_xml_report(results: Dict[str, Any], filename: str) -> None:
         aggr = ET.SubElement(acc, "aggressive")
         for t in svc["accepted_transforms"].get("aggressive", []):
             ET.SubElement(aggr, "sa").text = str(t)
+        ikev2 = ET.SubElement(acc, "ikev2")
+        for t in svc["accepted_transforms"].get("ikev2", []):
+            ET.SubElement(ikev2, "sa").text = str(t)
 
         # weak algorithms
         weak = ET.SubElement(s, "weak_algorithms")
@@ -1502,8 +1548,12 @@ def print_console_report(results: Dict[str, Any]) -> None:
             if svc["accepted_transforms"]["aggressive"]:
                 for t in svc["accepted_transforms"]["aggressive"]:
                     logger.info(f"    - IKEv1 Aggressive Mode: {t}")
-        if "IKEv2" in svc["meta"]["versions"]:
-            logger.info("  IKEv2 transforms: not enumerable with ike-scan 1.9.x (fixed default proposal only)")
+        if svc["accepted_transforms"].get("ikev2"):
+            logger.info("  Selected IKEv2 suite (confirmed, not exhaustive):")
+            for t in svc["accepted_transforms"]["ikev2"]:
+                logger.info(f"    - IKEv2 IKE_SA_INIT: {t}")
+        elif "IKEv2" in svc["meta"]["versions"]:
+            logger.info("  IKEv2 suite: peer responded, but no selected suite was decoded")
         logger.info("")
 
 def generate_reports(vpns: Dict[str, Dict[str, Any]], start_time: str, end_time: str) -> None:
@@ -1554,7 +1604,7 @@ def scan_target(ip: str) -> Dict[str, Any]:
     vpn_data = {
         "v1": False, "v2": False,
         "vid": [],
-        "transforms": [], "aggressive": [],
+        "transforms": [], "aggressive": [], "ikev2_transforms": [],
         "accepted_transform_keys_main": [], "accepted_transform_keys_aggr": [],
         "showbackoff": "N/A",
     }
