@@ -1,7 +1,7 @@
 # IKE Security Scanner (IKESS)
 A Python3 Script for Auditing IKE VPN Servers
 
-<img width="1632" height="1138" alt="image" src="https://github.com/user-attachments/assets/73939e6b-f885-4cc1-a3f5-8cd3005dd8f5" />
+<img width="1641" height="1107" alt="image" src="https://github.com/user-attachments/assets/0c045bb1-77bf-45e6-b16f-a391b04e5d14" />
 
 ## Features
 
