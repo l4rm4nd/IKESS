@@ -1,3 +1,10 @@
+## [0.5.1](https://github.com/l4rm4nd/IKESS/compare/v0.5.0...v0.5.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* extract ikev1 hash and adjust 01 test example ([0ed33a9](https://github.com/l4rm4nd/IKESS/commit/0ed33a9d5049ddc253160971990ffe4d4eebbc7b))
+
 ## [0.5.0](https://github.com/l4rm4nd/IKESS/compare/v0.4.0...v0.5.0) (2026-10-25)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * fullalgs now iterates all possible transforms ([1048312](https://github.com/l4rm4nd/IKESS/commit/10483126562b1f64bb35f1fea66c0723ade958b1))
-
-## [0.2.2](https://github.com/l4rm4nd/IKESS/compare/v0.2.1...v0.2.2) (2025-10-29)
-
-
-### Bug Fixes
-
-* proper filenames ([001315f](https://github.com/l4rm4nd/IKESS/commit/001315ff3774dcb713b5d9ab6f4e5d40a518d281))
 
