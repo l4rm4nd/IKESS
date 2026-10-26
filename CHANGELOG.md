@@ -1,3 +1,10 @@
+## [0.5.6](https://github.com/l4rm4nd/IKESS/compare/v0.5.5...v0.5.6) (2026-10-26)
+
+
+### Bug Fixes
+
+* make the wordlist path correct ([73268fb](https://github.com/l4rm4nd/IKESS/commit/73268fb08091a7d699ea1a50b838da23cdc2042f))
+
 ## [0.5.5](https://github.com/l4rm4nd/IKESS/compare/v0.5.4...v0.5.5) (2026-10-26)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * add AES_CBC as finding ([724882d](https://github.com/l4rm4nd/IKESS/commit/724882d962f33840f8a77b441736e90abc626928))
-
-## [0.5.1](https://github.com/l4rm4nd/IKESS/compare/v0.5.0...v0.5.1) (2026-10-25)
-
-
-### Bug Fixes
-
-* extract ikev1 hash and adjust 01 test example ([0ed33a9](https://github.com/l4rm4nd/IKESS/commit/0ed33a9d5049ddc253160971990ffe4d4eebbc7b))
 
