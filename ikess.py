@@ -583,11 +583,15 @@ def check_ikev1_aggressive(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     identity = f" with --id '{VPN_ID}'" if VPN_ID else ""
     logger.info(f"Main Mode was silent for {ip} - trying IKEv1 Aggressive Mode{identity}")
     _, transforms_aggr = _transform_sets()
-    for transform in transforms_aggr:
+    total = len(transforms_aggr)
+    for i, transform in enumerate(transforms_aggr, 1):
+        progress = (i / total) * 100
+        print(f"\r[{'█' * int(progress / 100 * 30):30}] {progress:.1f}% - Aggressive Mode Discovery Transform: {transform}", end="", flush=True)
         out = _try_transform(ip, transform, aggressive=True)
         if not out:
             continue
         if _has_positive_summary(out) or _has_body_markers(out, BODY_MARKERS_V1):
+            print()
             vpns[ip]["v1"] = True
             vpns[ip]["ikev1_raw_handshake"] = out.strip()
             vids = _parse_vids(out)
@@ -595,6 +599,7 @@ def check_ikev1_aggressive(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
                 if vid not in vpns[ip].setdefault("vid", []):
                     vpns[ip]["vid"].append(vid)
             return
+    print()
 
 def probe_natt_port(vpns: Dict[str, Dict[str, Any]], ip: str) -> None:
     """
