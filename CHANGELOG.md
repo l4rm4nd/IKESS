@@ -1,3 +1,10 @@
+## [0.5.4](https://github.com/l4rm4nd/IKESS/compare/v0.5.3...v0.5.4) (2026-10-26)
+
+
+### Bug Fixes
+
+* add progress bar ([6b01f0e](https://github.com/l4rm4nd/IKESS/commit/6b01f0e9b9f2e7ce5c750194117e12e34ae9b43b))
+
 ## [0.5.3](https://github.com/l4rm4nd/IKESS/compare/v0.5.2...v0.5.3) (2026-10-25)
 
 
@@ -25,11 +32,4 @@
 ### Features
 
 * improve ike detection and add features ([0c42694](https://github.com/l4rm4nd/IKESS/commit/0c426941cdf04a406a2cb80e9c4d24d098276953))
-
-## [0.4.0](https://github.com/l4rm4nd/IKESS/compare/v0.3.0...v0.4.0) (2026-10-25)
-
-
-### Features
-
-* add --nat-t option to probe IKE over UDP 4500 ([a811fd8](https://github.com/l4rm4nd/IKESS/commit/a811fd8013716b4e0da48c4ee428500e3ef65770))
 
