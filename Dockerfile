@@ -32,7 +32,7 @@ COPY --from=ikebuilder /usr/local/share/ike-scan /usr/local/share/ike-scan
 
 # your app
 COPY ikess.py /app/
-COPY wordlists/ /app/
+COPY wordlists/ /app/wordlists/
 WORKDIR /app
 
 # entrypoint runs the script; extra args from CMD are passed through
