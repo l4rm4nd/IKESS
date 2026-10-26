@@ -1,3 +1,10 @@
+## [0.5.5](https://github.com/l4rm4nd/IKESS/compare/v0.5.4...v0.5.5) (2026-10-26)
+
+
+### Bug Fixes
+
+* add wordlists into the container ([b24b3c7](https://github.com/l4rm4nd/IKESS/commit/b24b3c7f536b1e0ab34e6f310d6f835d4467dda2))
+
 ## [0.5.4](https://github.com/l4rm4nd/IKESS/compare/v0.5.3...v0.5.4) (2026-10-26)
 
 
@@ -25,11 +32,4 @@
 ### Bug Fixes
 
 * extract ikev1 hash and adjust 01 test example ([0ed33a9](https://github.com/l4rm4nd/IKESS/commit/0ed33a9d5049ddc253160971990ffe4d4eebbc7b))
-
-## [0.5.0](https://github.com/l4rm4nd/IKESS/compare/v0.4.0...v0.5.0) (2026-10-25)
-
-
-### Features
-
-* improve ike detection and add features ([0c42694](https://github.com/l4rm4nd/IKESS/commit/0c426941cdf04a406a2cb80e9c4d24d098276953))
 
