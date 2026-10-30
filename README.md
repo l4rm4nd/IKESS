@@ -149,5 +149,4 @@ INFO finding ("Peer responded but rejected every offered proposal"). Common reas
   this during discovery and scans over 4500 automatically. If UDP 500 answered but you
   suspect the 4500 listener runs a different policy, rerun with `--nat-t`.
 - The gateway negotiates **IKEv2 only**: ike-scan cannot enumerate IKEv2 proposals (`--trans` is not
-  supported with `--ikev2`), so IKEv2-only policies cannot be matched by any ike-scan based tool.
-  ikess reports the IKEv2 capability from the discovery response instead.
+  supported with `--ikev2`), so IKEv2-only policies cannot be matched by any ike-scan based tool. Please use the IKESS Docker image, which bundles a fixed ike-scan binary.
